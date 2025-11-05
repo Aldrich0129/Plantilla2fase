@@ -63,6 +63,8 @@ if 'work_dir' not in st.session_state:
     st.session_state.work_dir = tempfile.mkdtemp()
 if 'selected_for_merge' not in st.session_state:
     st.session_state.selected_for_merge = []
+if 'last_edited_variable' not in st.session_state:
+    st.session_state.last_edited_variable = None  # Mantiene la última variable editada expandida
 
 
 def hex_to_color_name(hex_color):
@@ -162,17 +164,17 @@ def merge_variables(var_ids: list, new_name: str = None):
     if len(var_ids) < 2:
         st.error("Debes seleccionar al menos 2 variables para fusionar")
         return
-    
+
     merged_text = " ".join([
-        st.session_state.variables[vid]['original_text'] 
+        st.session_state.variables[vid]['original_text']
         for vid in var_ids if vid in st.session_state.variables
     ])
-    
+
     if not new_name:
         new_name = "_".join(var_ids[:2])
-    
+
     first_var = st.session_state.variables[var_ids[0]]
-    
+
     st.session_state.variables[new_name] = {
         'original_text': merged_text,
         'tipo': first_var['tipo'],
@@ -181,12 +183,13 @@ def merge_variables(var_ids: list, new_name: str = None):
         'opciones': first_var.get('opciones', []),
         'disabled': False
     }
-    
+
     for vid in var_ids:
         if vid in st.session_state.variables:
             del st.session_state.variables[vid]
-    
+
     st.session_state.selected_for_merge = []
+    st.session_state.last_edited_variable = new_name  # Mantener expandida la nueva variable
     st.success(f"✅ Variables fusionadas en: `{new_name}`")
     st.rerun()
 
@@ -195,23 +198,27 @@ def split_variable(var_id: str, delimiter: str = '/'):
     """Divide una variable en múltiples variables según un delimitador"""
     if var_id not in st.session_state.variables:
         return
-    
+
     var_info = st.session_state.variables[var_id]
     original_text = var_info['original_text']
-    
+
     parts = [p.strip() for p in original_text.split(delimiter) if p.strip()]
-    
+
     if len(parts) < 2:
         st.error(f"No se encontraron múltiples partes separadas por '{delimiter}'")
         return
-    
+
     del st.session_state.variables[var_id]
-    
+
+    first_new_var = None
     for i, part in enumerate(parts):
         new_var_id = VariableNormalizer.normalize_name(part)
         if new_var_id in st.session_state.variables:
             new_var_id = f"{new_var_id}_{i+1}"
-        
+
+        if first_new_var is None:
+            first_new_var = new_var_id
+
         st.session_state.variables[new_var_id] = {
             'original_text': part,
             'tipo': var_info['tipo'],
@@ -220,7 +227,8 @@ def split_variable(var_id: str, delimiter: str = '/'):
             'opciones': [],
             'disabled': False
         }
-    
+
+    st.session_state.last_edited_variable = first_new_var  # Mantener expandida la primera variable nueva
     st.success(f"✅ Variable dividida en {len(parts)} nuevas variables")
     st.rerun()
 
@@ -263,6 +271,7 @@ def split_variable_free(var_id: str, start_idx: int, end_idx: int, new_var_name:
 
     st.session_state.variables[var_id]['original_text'] = remaining_part.strip()
 
+    st.session_state.last_edited_variable = var_id  # Mantener expandida la variable modificada
     st.success(f"✅ Variable dividida en: `{new_var_id}` y `{var_id}` (modificada)")
     st.rerun()
 
@@ -315,6 +324,11 @@ def split_variable_by_context(var_id: str, contexts_groups: dict):
     # Eliminar la variable original
     del st.session_state.variables[var_id]
 
+    # Mantener expandida la primera variable nueva creada
+    first_new_var = list(contexts_groups.keys())[0] if contexts_groups else None
+    if first_new_var:
+        st.session_state.last_edited_variable = VariableNormalizer.normalize_name(first_new_var)
+
     st.success(f"✅ Variable `{var_id}` dividida en {len(contexts_groups)} variables por contexto")
     st.rerun()
 
@@ -324,6 +338,7 @@ def toggle_variable_enabled(var_id: str):
     if var_id in st.session_state.variables:
         current_state = st.session_state.variables[var_id].get('disabled', False)
         st.session_state.variables[var_id]['disabled'] = not current_state
+        st.session_state.last_edited_variable = var_id  # Mantener expandida esta variable
         st.rerun()
 
 
@@ -553,7 +568,7 @@ def main():
                 if pattern1_value and pattern2_value:
                     st.success(f"✅ Configurado: **{pattern1_type}** AND **{pattern2_type}**")
         
-        # Botón detectar (LÓGICA ORIGINAL DEL CÓDIGO QUE FUNCIONA)
+        # Botón detectar (CON PRIORIDAD MEJORADA)
         st.markdown("---")
         if st.button("🔍 Detectar Variables", type="primary"):
             variables_found = {}
@@ -564,8 +579,10 @@ def main():
             else:
                 full_text = extract_text_from_pptx(doc)
 
-            # 🆕 Detectar patrones de fecha con "de" ANTES de los patrones normales
+            # 🆕 PASO 1: Detectar patrones de fecha con "de" PRIMERO (con prioridad interna)
             date_patterns = PatternDetector.detect_date_with_de_patterns(full_text)
+            already_detected_texts = []  # Lista de textos ya detectados como variables
+
             for date_text in date_patterns:
                 var_id = VariableNormalizer.normalize_name(date_text)
                 if var_id not in variables_found:
@@ -577,11 +594,16 @@ def main():
                         'opciones': [],
                         'disabled': False
                     }
+                    already_detected_texts.append(date_text)
 
-            # Detectar por patrones de texto (IGUAL QUE ORIGINAL)
+            # PASO 2: Detectar por patrones de texto, pero excluir substrings ya detectados
             for pattern in text_patterns:
                 vars_list = PatternDetector.extract_variables_by_pattern(full_text, pattern)
                 for var_text in vars_list:
+                    # Verificar si este texto está contenido en algún texto ya detectado
+                    if PatternDetector.is_substring_of_any(var_text, already_detected_texts):
+                        continue  # Saltar, ya está dentro de una variable detectada
+
                     var_id = VariableNormalizer.normalize_name(var_text)
                     if var_id not in variables_found:
                         detected_options = PatternDetector.detect_list_options(var_text)
@@ -595,17 +617,22 @@ def main():
                             'opciones': detected_options if detected_options else [],
                             'disabled': False
                         }
+                        already_detected_texts.append(var_text)
             
-            # Detectar por colores (IGUAL QUE ORIGINAL)
+            # PASO 3: Detectar por colores, también excluyendo substrings ya detectados
             if file_extension == 'docx':
                 for color in selected_text_colors:
                     color_vars = PatternDetector.extract_variables_by_color(doc, color, 'text')
                     for var_text, run in color_vars:
+                        # Verificar si este texto está contenido en algún texto ya detectado
+                        if PatternDetector.is_substring_of_any(var_text, already_detected_texts):
+                            continue  # Saltar, ya está dentro de una variable detectada
+
                         var_id = VariableNormalizer.normalize_name(var_text)
                         if var_id not in variables_found:
                             detected_options = PatternDetector.detect_list_options(var_text)
                             var_tipo = 'lista' if detected_options else infer_variable_type(var_text)
-                            
+
                             variables_found[var_id] = {
                                 'original_text': var_text,
                                 'tipo': var_tipo,
@@ -614,15 +641,20 @@ def main():
                                 'opciones': detected_options if detected_options else [],
                                 'disabled': False
                             }
-                
+                            already_detected_texts.append(var_text)
+
                 for color in selected_highlight_colors:
                     color_vars = PatternDetector.extract_variables_by_color(doc, color, 'highlight')
                     for var_text, run in color_vars:
+                        # Verificar si este texto está contenido en algún texto ya detectado
+                        if PatternDetector.is_substring_of_any(var_text, already_detected_texts):
+                            continue  # Saltar, ya está dentro de una variable detectada
+
                         var_id = VariableNormalizer.normalize_name(var_text)
                         if var_id not in variables_found:
                             detected_options = PatternDetector.detect_list_options(var_text)
                             var_tipo = 'lista' if detected_options else infer_variable_type(var_text)
-                            
+
                             variables_found[var_id] = {
                                 'original_text': var_text,
                                 'tipo': var_tipo,
@@ -631,6 +663,7 @@ def main():
                                 'opciones': detected_options if detected_options else [],
                                 'disabled': False
                             }
+                            already_detected_texts.append(var_text)
             
             # 🆕 Detectar con patrón combinado si está activado
             if use_combined and pattern1_value and pattern2_value:
@@ -694,13 +727,16 @@ def main():
             # Editor de variables
             for idx, (var_id, var_info) in enumerate(st.session_state.variables.items()):
                 is_disabled = var_info.get('disabled', False)
-                
+
                 if is_disabled:
                     label = f"~~Variable {idx+1}: `{var_id}`~~ 🗑️ DESACTIVADA"
                 else:
                     label = f"Variable {idx+1}: `{var_id}`"
-                
-                with st.expander(label, expanded=False):
+
+                # Mantener expandida solo la última variable editada
+                is_expanded = (var_id == st.session_state.last_edited_variable)
+
+                with st.expander(label, expanded=is_expanded):
                     # Botón desactivar/activar
                     if is_disabled:
                         if st.button("✅ Reactivar", key=f"en_{var_id}"):
@@ -741,6 +777,7 @@ def main():
                                             'name': '',
                                             'contexts': []
                                         })
+                                        st.session_state.last_edited_variable = var_id  # Mantener expandida
                                         st.rerun()
 
                                     # Mostrar grupos existentes
@@ -762,6 +799,7 @@ def main():
                                                 with gcol2:
                                                     if st.button("🗑️", key=f"del_group_{var_id}_{group_idx}"):
                                                         st.session_state[f'context_groups_{var_id}'].pop(group_idx)
+                                                        st.session_state.last_edited_variable = var_id  # Mantener expandida
                                                         st.rerun()
 
                                                 # Seleccionar contextos para este grupo

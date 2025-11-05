@@ -1,6 +1,7 @@
 """
 FASE 2: Generador de Informes
 Rellena plantillas con datos del usuario y genera documentos finales
+VERSIÓN 2: Compatible con utils_v2.py
 """
 
 import streamlit as st
@@ -9,7 +10,7 @@ import tempfile
 from pathlib import Path
 from docx import Document
 from pptx import Presentation
-from utils import YAMLManager, DocumentProcessor, Validator
+from utils_v2 import YAMLManager, DocumentProcessor, Validator
 import io
 from datetime import datetime
 # === Helpers nuevos ===

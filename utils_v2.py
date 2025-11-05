@@ -26,10 +26,11 @@ class PatternDetector:
     }
 
     # Patrones de fecha con "de" (para detectar como variable única)
+    # ORDEN DE PRIORIDAD: más largo a más corto
     DATE_WITH_DE_PATTERNS = [
-        r'(d[ií]a\s+de\s+mes\s+de\s+a[ñn]o)',  # día de mes de año
-        r'(d[ií]a\s+de\s+mes)',  # día de mes
-        r'(mes\s+de\s+a[ñn]o)',  # mes de año
+        r'(d[ií]a\s+de\s+mes\s+de\s+a[ñn]o)',  # día de mes de año (PRIORIDAD 1)
+        r'(d[ií]a\s+de\s+mes)',  # día de mes (PRIORIDAD 2)
+        r'(mes\s+de\s+a[ñn]o)',  # mes de año (PRIORIDAD 3)
     ]
     
     @staticmethod
@@ -115,20 +116,38 @@ class PatternDetector:
         return colors
     
     @staticmethod
+    def is_substring_of_any(text: str, text_list: List[str]) -> bool:
+        """
+        Verifica si un texto está contenido dentro de cualquier texto de la lista.
+        Comparación case-insensitive.
+        """
+        text_lower = text.lower().strip()
+        for other in text_list:
+            other_lower = other.lower().strip()
+            if text_lower != other_lower and text_lower in other_lower:
+                return True
+        return False
+
+    @staticmethod
     def detect_date_with_de_patterns(text: str) -> List[str]:
         """
         Detecta patrones de fecha con 'de' como una variable única.
         Por ejemplo: 'día de mes de año', 'día de mes', 'mes de año'
+        Respeta la prioridad: detecta primero los más largos y excluye subconjuntos.
         """
         detected_dates = []
         text_lower = text.lower()
 
+        # Detectar en orden de prioridad (más largo a más corto)
         for pattern in PatternDetector.DATE_WITH_DE_PATTERNS:
             matches = re.finditer(pattern, text_lower, re.IGNORECASE)
             for match in matches:
-                detected_dates.append(match.group(1))
+                found_text = match.group(1)
+                # Solo agregar si no es substring de algo ya detectado
+                if not PatternDetector.is_substring_of_any(found_text, detected_dates):
+                    detected_dates.append(found_text)
 
-        return list(set(detected_dates))  # Eliminar duplicados
+        return detected_dates  # Mantener orden de prioridad
 
     @staticmethod
     def extract_variables_by_pattern(text: str, pattern: str) -> List[str]:
