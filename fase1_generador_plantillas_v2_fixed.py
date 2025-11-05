@@ -7,6 +7,8 @@ NUEVAS FUNCIONALIDADES:
 - Desidentificar variables
 - Mostrar contexto de variables
 - División libre con selector manual
+- Dividir variables por contexto seleccionado
+- Detección mejorada de fechas con "de" (día de mes de año, etc.)
 """
 
 import streamlit as st
@@ -227,29 +229,29 @@ def split_variable_free(var_id: str, start_idx: int, end_idx: int, new_var_name:
     """Divide una variable usando selección libre por índices"""
     if var_id not in st.session_state.variables:
         return
-    
+
     var_info = st.session_state.variables[var_id]
     original_text = var_info['original_text']
-    
+
     if start_idx < 0 or end_idx > len(original_text) or start_idx >= end_idx:
         st.error("Índices inválidos. Verifica los valores ingresados.")
         return
-    
+
     selected_part = original_text[start_idx:end_idx]
     remaining_part = original_text[:start_idx] + original_text[end_idx:]
-    
+
     if not selected_part.strip() or not remaining_part.strip():
         st.error("Una de las partes resultó vacía. Ajusta los índices.")
         return
-    
+
     new_var_id = VariableNormalizer.normalize_name(new_var_name if new_var_name else selected_part)
-    
+
     suffix = 1
     original_new_var_id = new_var_id
     while new_var_id in st.session_state.variables:
         new_var_id = f"{original_new_var_id}_{suffix}"
         suffix += 1
-    
+
     st.session_state.variables[new_var_id] = {
         'original_text': selected_part.strip(),
         'tipo': var_info['tipo'],
@@ -258,10 +260,62 @@ def split_variable_free(var_id: str, start_idx: int, end_idx: int, new_var_name:
         'opciones': [],
         'disabled': False
     }
-    
+
     st.session_state.variables[var_id]['original_text'] = remaining_part.strip()
-    
+
     st.success(f"✅ Variable dividida en: `{new_var_id}` y `{var_id}` (modificada)")
+    st.rerun()
+
+
+def split_variable_by_context(var_id: str, contexts_groups: dict):
+    """
+    Divide una variable en múltiples variables según los contextos seleccionados.
+
+    Args:
+        var_id: ID de la variable a dividir
+        contexts_groups: Dict donde cada key es el nuevo nombre de variable y
+                        el value es la lista de índices de contextos
+    Ejemplo: {'mes_de_cierre': [0, 1, 2], 'mes_de_facturacion': [3, 4]}
+    """
+    if var_id not in st.session_state.variables:
+        st.error(f"Variable {var_id} no encontrada")
+        return
+
+    if not contexts_groups or len(contexts_groups) < 2:
+        st.error("Debes crear al menos 2 grupos de contextos")
+        return
+
+    var_info = st.session_state.variables[var_id]
+
+    # Crear las nuevas variables para cada grupo
+    for new_var_name, context_indices in contexts_groups.items():
+        if not context_indices:
+            continue
+
+        new_var_id = VariableNormalizer.normalize_name(new_var_name)
+
+        # Evitar duplicados
+        suffix = 1
+        original_new_var_id = new_var_id
+        while new_var_id in st.session_state.variables:
+            new_var_id = f"{original_new_var_id}_{suffix}"
+            suffix += 1
+
+        # Crear la nueva variable con los contextos específicos
+        st.session_state.variables[new_var_id] = {
+            'original_text': var_info['original_text'],
+            'tipo': var_info['tipo'],
+            'pattern': var_info['pattern'],
+            'pregunta': '',
+            'opciones': var_info.get('opciones', []),
+            'disabled': False,
+            'context_indices': context_indices  # Guardar los índices de contexto
+        }
+
+    # Eliminar la variable original
+    del st.session_state.variables[var_id]
+
+    st.success(f"✅ Variable `{var_id}` dividida en {len(contexts_groups)} variables por contexto")
     st.rerun()
 
 
@@ -331,9 +385,9 @@ def detect_combined_pattern_variables(doc, file_extension: str, pattern1_type: s
 def main():
     st.title("📝 Fase 1: Generador de Plantillas v2.0")
     st.markdown("### 🆕 Nuevas funcionalidades:")
-    st.info("🔗 Patrón combinado | 🗑️ Desactivar variables | 📍 Contexto | ✂️ División libre")
+    st.info("🔗 Patrón combinado | 🗑️ Desactivar variables | 📍 Contexto | ✂️ División libre | 🎯 División por contexto | 📅 Fechas con 'de'")
     st.markdown("---")
-    
+
     with st.sidebar:
         st.header("📖 Guía de Uso")
         st.markdown("""
@@ -343,12 +397,14 @@ def main():
         3. **(Opcional)** Patrón combinado
         4. **Revisar** variables
         5. **Configurar** y exportar
-        
+
         ### 🆕 Nuevas funciones:
         - 🔗 Patrón combinado (AND)
         - 🗑️ Desactivar variables
         - 📍 Ver contexto
         - ✂️ División libre
+        - 🎯 División por contexto
+        - 📅 Fechas con "de"
         """)
     
     # Paso 1: Subir documento
@@ -501,13 +557,27 @@ def main():
         st.markdown("---")
         if st.button("🔍 Detectar Variables", type="primary"):
             variables_found = {}
-            
+
             # Extraer texto completo
             if file_extension == 'docx':
                 full_text = extract_text_from_docx(doc)
             else:
                 full_text = extract_text_from_pptx(doc)
-            
+
+            # 🆕 Detectar patrones de fecha con "de" ANTES de los patrones normales
+            date_patterns = PatternDetector.detect_date_with_de_patterns(full_text)
+            for date_text in date_patterns:
+                var_id = VariableNormalizer.normalize_name(date_text)
+                if var_id not in variables_found:
+                    variables_found[var_id] = {
+                        'original_text': date_text,
+                        'tipo': 'fecha',
+                        'pattern': 'date_with_de',
+                        'pregunta': '',
+                        'opciones': [],
+                        'disabled': False
+                    }
+
             # Detectar por patrones de texto (IGUAL QUE ORIGINAL)
             for pattern in text_patterns:
                 vars_list = PatternDetector.extract_variables_by_pattern(full_text, pattern)
@@ -516,7 +586,7 @@ def main():
                     if var_id not in variables_found:
                         detected_options = PatternDetector.detect_list_options(var_text)
                         var_tipo = 'lista' if detected_options else infer_variable_type(var_text)
-                        
+
                         variables_found[var_id] = {
                             'original_text': var_text,
                             'tipo': var_tipo,
@@ -651,12 +721,85 @@ def main():
                                 contexts = PatternDetector.extract_variable_context(doc, var_info['original_text'], 20)
                             else:
                                 contexts = PatternDetector.extract_variable_context_pptx(prs, var_info['original_text'], 20)
-                            
+
                             if contexts:
-                                for i, ctx in enumerate(contexts[:5]):
+                                for i, ctx in enumerate(contexts):
                                     st.markdown(f"**{i+1}.** ({ctx['location']}): `{ctx['before']}`**`{ctx['variable']}`**`{ctx['after']}`")
-                                if len(contexts) > 5:
-                                    st.info(f"...y {len(contexts)-5} más")
+
+                                # 🆕 DIVIDIR POR CONTEXTO
+                                if len(contexts) > 1:
+                                    st.markdown("---")
+                                    st.markdown("**✂️ Dividir por contexto:**")
+
+                                    # Inicializar estado para grupos de contexto
+                                    if f'context_groups_{var_id}' not in st.session_state:
+                                        st.session_state[f'context_groups_{var_id}'] = []
+
+                                    # Botón para añadir grupo
+                                    if st.button("➕ Añadir grupo", key=f"add_group_{var_id}"):
+                                        st.session_state[f'context_groups_{var_id}'].append({
+                                            'name': '',
+                                            'contexts': []
+                                        })
+                                        st.rerun()
+
+                                    # Mostrar grupos existentes
+                                    groups = st.session_state[f'context_groups_{var_id}']
+                                    if groups:
+                                        for group_idx, group in enumerate(groups):
+                                            with st.container():
+                                                st.markdown(f"**Grupo {group_idx + 1}:**")
+
+                                                gcol1, gcol2 = st.columns([2, 1])
+                                                with gcol1:
+                                                    group['name'] = st.text_input(
+                                                        "Nombre:",
+                                                        value=group['name'],
+                                                        key=f"gname_{var_id}_{group_idx}",
+                                                        placeholder="ej: mes_de_cierre"
+                                                    )
+
+                                                with gcol2:
+                                                    if st.button("🗑️", key=f"del_group_{var_id}_{group_idx}"):
+                                                        st.session_state[f'context_groups_{var_id}'].pop(group_idx)
+                                                        st.rerun()
+
+                                                # Seleccionar contextos para este grupo
+                                                selected_contexts = []
+                                                for ctx_idx in range(len(contexts)):
+                                                    is_selected = ctx_idx in group['contexts']
+                                                    if st.checkbox(
+                                                        f"Contexto {ctx_idx + 1}: {contexts[ctx_idx]['location']}",
+                                                        value=is_selected,
+                                                        key=f"ctx_sel_{var_id}_{group_idx}_{ctx_idx}"
+                                                    ):
+                                                        selected_contexts.append(ctx_idx)
+
+                                                group['contexts'] = selected_contexts
+                                                st.markdown("---")
+
+                                        # Botón para ejecutar división
+                                        if len(groups) >= 2:
+                                            if st.button("✨ Dividir variable", key=f"exec_split_{var_id}", type="primary"):
+                                                # Validar que todos los grupos tengan nombre y contextos
+                                                valid = True
+                                                contexts_dict = {}
+
+                                                for group in groups:
+                                                    if not group['name'].strip():
+                                                        st.error("Todos los grupos deben tener nombre")
+                                                        valid = False
+                                                        break
+                                                    if not group['contexts']:
+                                                        st.error("Todos los grupos deben tener al menos un contexto")
+                                                        valid = False
+                                                        break
+                                                    contexts_dict[group['name']] = group['contexts']
+
+                                                if valid:
+                                                    split_variable_by_context(var_id, contexts_dict)
+                                        else:
+                                            st.info("Añade al menos 2 grupos para dividir")
                             else:
                                 st.info("No se encontraron apariciones")
                         except Exception as e:
@@ -819,54 +962,130 @@ def create_template_docx(original_doc: Document, variables: dict) -> Document:
     """Crea plantilla Word"""
     doc = original_doc
     active = {k: v for k, v in variables.items() if not v.get('disabled', False)}
-    
+
+    # Inicializar contador de apariciones para variables con contextos específicos
+    occurrence_counters = {vid: 0 for vid, vinfo in active.items() if 'context_indices' in vinfo}
+
     for p in doc.paragraphs:
-        replace_in_paragraph(p, active)
+        replace_in_paragraph(p, active, occurrence_counters)
     for t in doc.tables:
         for r in t.rows:
             for c in r.cells:
                 for p in c.paragraphs:
-                    replace_in_paragraph(p, active)
+                    replace_in_paragraph(p, active, occurrence_counters)
     for s in doc.sections:
         if s.header:
             for p in s.header.paragraphs:
-                replace_in_paragraph(p, active)
+                replace_in_paragraph(p, active, occurrence_counters)
         if s.footer:
             for p in s.footer.paragraphs:
-                replace_in_paragraph(p, active)
+                replace_in_paragraph(p, active, occurrence_counters)
     return doc
 
 
-def replace_in_paragraph(paragraph, variables):
+def replace_in_paragraph(paragraph, variables, occurrence_counters=None):
     full = paragraph.text
     new = full
-    
+
+    if occurrence_counters is None:
+        occurrence_counters = {}
+
     for vid, vinfo in variables.items():
         if vinfo.get('disabled', False):
             continue
-        
+
         orig = vinfo['original_text'] or ""
         clean = clean_pattern_markers(orig)
         placeholder = f"{{{{{vid}}}}}"
         pname = (vinfo.get('pattern') or "").lower()
-        
+
+        # Verificar si esta variable tiene contextos específicos
+        context_indices = vinfo.get('context_indices')
+
+        # Buscar texto a reemplazar según el patrón
+        search_text = None
+        case_insensitive = False
+
         if pname in ('llaves_simples', 'llaves_dobles', 'corchetes_simples', 'corchetes_dobles'):
-            rmap = {
-                'llaves_simples': r'\{' + re.escape(clean) + r'\}',
-                'llaves_dobles': r'\{\{' + re.escape(clean) + r'\}\}',
-                'corchetes_simples': r'\[' + re.escape(clean) + r'\]',
-                'corchetes_dobles': r'\[\[' + re.escape(clean) + r'\]\]',
+            pattern_map = {
+                'llaves_simples': f"{{{clean}}}",
+                'llaves_dobles': f"{{{{{clean}}}}}",
+                'corchetes_simples': f"[{clean}]",
+                'corchetes_dobles': f"[[{clean}]]",
             }
-            new = re.sub(rmap[pname], placeholder, new)
-        elif pname.startswith('color_'):
-            if orig:
-                new = new.replace(orig, placeholder)
+            search_text = pattern_map.get(pname)
+        elif pname == 'date_with_de':
+            # Para patrones de fecha con "de", buscar case-insensitive
+            search_text = orig
+            case_insensitive = True
+        elif orig:
+            search_text = orig
+
+        if not search_text:
+            continue
+
+        # Verificar si el texto existe (case-insensitive si aplica)
+        if case_insensitive:
+            if search_text.lower() not in new.lower():
+                continue
         else:
-            if orig and orig in new:
-                new = new.replace(orig, placeholder)
-    
+            if search_text not in new:
+                continue
+
+        # Si tiene contextos específicos, reemplazar selectivamente
+        if context_indices is not None:
+            # Encontrar todas las apariciones en este párrafo
+            positions = []
+            start_pos = 0
+
+            if case_insensitive:
+                # Búsqueda case-insensitive
+                new_lower = new.lower()
+                search_lower = search_text.lower()
+                while True:
+                    pos = new_lower.find(search_lower, start_pos)
+                    if pos == -1:
+                        break
+                    positions.append(pos)
+                    start_pos = pos + 1
+            else:
+                while True:
+                    pos = new.find(search_text, start_pos)
+                    if pos == -1:
+                        break
+                    positions.append(pos)
+                    start_pos = pos + 1
+
+            # Reemplazar de atrás hacia adelante para mantener índices
+            for pos in reversed(positions):
+                current_occurrence = occurrence_counters.get(vid, 0)
+                if current_occurrence in context_indices:
+                    # Determinar longitud del texto a reemplazar
+                    if case_insensitive:
+                        # Encontrar la longitud exacta del texto en el documento
+                        actual_length = len(search_text)
+                    else:
+                        actual_length = len(search_text)
+                    new = new[:pos] + placeholder + new[pos + actual_length:]
+                occurrence_counters[vid] = current_occurrence + 1
+        else:
+            # Reemplazar todas las apariciones
+            if pname in ('llaves_simples', 'llaves_dobles', 'corchetes_simples', 'corchetes_dobles'):
+                rmap = {
+                    'llaves_simples': r'\{' + re.escape(clean) + r'\}',
+                    'llaves_dobles': r'\{\{' + re.escape(clean) + r'\}\}',
+                    'corchetes_simples': r'\[' + re.escape(clean) + r'\]',
+                    'corchetes_dobles': r'\[\[' + re.escape(clean) + r'\]\]',
+                }
+                new = re.sub(rmap[pname], placeholder, new)
+            elif case_insensitive:
+                # Reemplazo case-insensitive
+                new = re.sub(re.escape(search_text), placeholder, new, flags=re.IGNORECASE)
+            else:
+                new = new.replace(search_text, placeholder)
+
     new = sanitize_placeholders(new)
-    
+
     if new != full:
         for run in paragraph.runs:
             run.text = ''
@@ -880,49 +1099,120 @@ def create_template_pptx(original_prs: Presentation, variables: dict) -> Present
     """Crea plantilla PowerPoint"""
     prs = original_prs
     active = {k: v for k, v in variables.items() if not v.get('disabled', False)}
-    
+
+    # Inicializar contador de apariciones para variables con contextos específicos
+    occurrence_counters = {vid: 0 for vid, vinfo in active.items() if 'context_indices' in vinfo}
+
     for slide in prs.slides:
         for shape in slide.shapes:
             if hasattr(shape, "text_frame"):
-                replace_in_textframe(shape.text_frame, active)
+                replace_in_textframe(shape.text_frame, active, occurrence_counters)
             if hasattr(shape, "table"):
                 for row in shape.table.rows:
                     for cell in row.cells:
-                        replace_in_textframe(cell.text_frame, active)
+                        replace_in_textframe(cell.text_frame, active, occurrence_counters)
     return prs
 
 
-def replace_in_textframe(tf, variables):
+def replace_in_textframe(tf, variables, occurrence_counters=None):
+    if occurrence_counters is None:
+        occurrence_counters = {}
+
     for para in tf.paragraphs:
         full = ''.join(r.text for r in para.runs)
         new = full
-        
+
         for vid, vinfo in variables.items():
             if vinfo.get('disabled', False):
                 continue
-            
+
             orig = vinfo['original_text'] or ""
             clean = clean_pattern_markers(orig)
             placeholder = f"{{{{{vid}}}}}"
             pname = (vinfo.get('pattern') or "").lower()
-            
+
+            # Verificar si esta variable tiene contextos específicos
+            context_indices = vinfo.get('context_indices')
+
+            # Buscar texto a reemplazar según el patrón
+            search_text = None
+            case_insensitive = False
+
             if pname in ('llaves_simples', 'llaves_dobles', 'corchetes_simples', 'corchetes_dobles'):
-                rmap = {
-                    'llaves_simples': r'\{' + re.escape(clean) + r'\}',
-                    'llaves_dobles': r'\{\{' + re.escape(clean) + r'\}\}',
-                    'corchetes_simples': r'\[' + re.escape(clean) + r'\]',
-                    'corchetes_dobles': r'\[\[' + re.escape(clean) + r'\]\]',
+                pattern_map = {
+                    'llaves_simples': f"{{{clean}}}",
+                    'llaves_dobles': f"{{{{{clean}}}}}",
+                    'corchetes_simples': f"[{clean}]",
+                    'corchetes_dobles': f"[[{clean}]]",
                 }
-                new = re.sub(rmap[pname], placeholder, new)
-            elif pname.startswith('color_'):
-                if orig:
-                    new = new.replace(orig, placeholder)
+                search_text = pattern_map.get(pname)
+            elif pname == 'date_with_de':
+                # Para patrones de fecha con "de", buscar case-insensitive
+                search_text = orig
+                case_insensitive = True
+            elif orig:
+                search_text = orig
+
+            if not search_text:
+                continue
+
+            # Verificar si el texto existe (case-insensitive si aplica)
+            if case_insensitive:
+                if search_text.lower() not in new.lower():
+                    continue
             else:
-                if orig and orig in new:
-                    new = new.replace(orig, placeholder)
-        
+                if search_text not in new:
+                    continue
+
+            # Si tiene contextos específicos, reemplazar selectivamente
+            if context_indices is not None:
+                # Encontrar todas las apariciones en este text frame
+                positions = []
+                start_pos = 0
+
+                if case_insensitive:
+                    # Búsqueda case-insensitive
+                    new_lower = new.lower()
+                    search_lower = search_text.lower()
+                    while True:
+                        pos = new_lower.find(search_lower, start_pos)
+                        if pos == -1:
+                            break
+                        positions.append(pos)
+                        start_pos = pos + 1
+                else:
+                    while True:
+                        pos = new.find(search_text, start_pos)
+                        if pos == -1:
+                            break
+                        positions.append(pos)
+                        start_pos = pos + 1
+
+                # Reemplazar de atrás hacia adelante para mantener índices
+                for pos in reversed(positions):
+                    current_occurrence = occurrence_counters.get(vid, 0)
+                    if current_occurrence in context_indices:
+                        actual_length = len(search_text)
+                        new = new[:pos] + placeholder + new[pos + actual_length:]
+                    occurrence_counters[vid] = current_occurrence + 1
+            else:
+                # Reemplazar todas las apariciones
+                if pname in ('llaves_simples', 'llaves_dobles', 'corchetes_simples', 'corchetes_dobles'):
+                    rmap = {
+                        'llaves_simples': r'\{' + re.escape(clean) + r'\}',
+                        'llaves_dobles': r'\{\{' + re.escape(clean) + r'\}\}',
+                        'corchetes_simples': r'\[' + re.escape(clean) + r'\]',
+                        'corchetes_dobles': r'\[\[' + re.escape(clean) + r'\]\]',
+                    }
+                    new = re.sub(rmap[pname], placeholder, new)
+                elif case_insensitive:
+                    # Reemplazo case-insensitive
+                    new = re.sub(re.escape(search_text), placeholder, new, flags=re.IGNORECASE)
+                else:
+                    new = new.replace(search_text, placeholder)
+
         new = sanitize_placeholders(new)
-        
+
         if new != full:
             for run in para.runs:
                 run.text = ''

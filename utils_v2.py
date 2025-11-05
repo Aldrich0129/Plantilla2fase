@@ -16,7 +16,7 @@ import yaml
 
 class PatternDetector:
     """Detecta patrones de variables en documentos"""
-    
+
     # Patrones de texto predefinidos
     TEXT_PATTERNS = {
         'llaves_simples': r'\{([^}]+)\}',
@@ -24,6 +24,13 @@ class PatternDetector:
         'corchetes_simples': r'\[([^\]]+)\]',
         'corchetes_dobles': r'\[\[([^\]]+)\]\]',
     }
+
+    # Patrones de fecha con "de" (para detectar como variable única)
+    DATE_WITH_DE_PATTERNS = [
+        r'(d[ií]a\s+de\s+mes\s+de\s+a[ñn]o)',  # día de mes de año
+        r'(d[ií]a\s+de\s+mes)',  # día de mes
+        r'(mes\s+de\s+a[ñn]o)',  # mes de año
+    ]
     
     @staticmethod
     def detect_colors_in_docx(doc: Document) -> Dict[str, Set[str]]:
@@ -108,13 +115,29 @@ class PatternDetector:
         return colors
     
     @staticmethod
+    def detect_date_with_de_patterns(text: str) -> List[str]:
+        """
+        Detecta patrones de fecha con 'de' como una variable única.
+        Por ejemplo: 'día de mes de año', 'día de mes', 'mes de año'
+        """
+        detected_dates = []
+        text_lower = text.lower()
+
+        for pattern in PatternDetector.DATE_WITH_DE_PATTERNS:
+            matches = re.finditer(pattern, text_lower, re.IGNORECASE)
+            for match in matches:
+                detected_dates.append(match.group(1))
+
+        return list(set(detected_dates))  # Eliminar duplicados
+
+    @staticmethod
     def extract_variables_by_pattern(text: str, pattern: str) -> List[str]:
         """Extrae variables según un patrón regex"""
         if pattern in PatternDetector.TEXT_PATTERNS:
             regex = PatternDetector.TEXT_PATTERNS[pattern]
         else:
             regex = pattern
-        
+
         matches = re.findall(regex, text)
         return list(set(matches))  # Eliminar duplicados
     
@@ -293,36 +316,75 @@ class PatternDetector:
     def _extract_context_from_text(full_text: str, variable_text: str, context_chars: int, location: str) -> List[Dict[str, str]]:
         """Extrae contexto de un texto específico"""
         contexts = []
-        
+
         # Buscar todas las ocurrencias
         start_pos = 0
         while True:
             pos = full_text.find(variable_text, start_pos)
             if pos == -1:
                 break
-            
+
             # Extraer contexto
             before_start = max(0, pos - context_chars)
             before = full_text[before_start:pos]
             after_end = min(len(full_text), pos + len(variable_text) + context_chars)
             after = full_text[pos + len(variable_text):after_end]
-            
+
             # Añadir elipsis si es necesario
             if before_start > 0:
                 before = "..." + before
             if after_end < len(full_text):
                 after = after + "..."
-            
+
             contexts.append({
                 'before': before,
                 'variable': variable_text,
                 'after': after,
-                'location': location
+                'location': location,
+                'position': pos  # Guardar posición para reemplazo selectivo
             })
-            
+
             start_pos = pos + 1
-        
+
         return contexts
+
+    @staticmethod
+    def replace_text_by_context(text: str, search_text: str, replacement: str, context_indices: List[int] = None) -> str:
+        """
+        Reemplaza texto solo en los contextos especificados.
+
+        Args:
+            text: Texto completo
+            search_text: Texto a buscar
+            replacement: Texto de reemplazo
+            context_indices: Lista de índices de ocurrencias a reemplazar (0-indexed).
+                            Si es None, reemplaza todas.
+
+        Returns:
+            Texto modificado
+        """
+        if context_indices is None:
+            # Reemplazar todas las ocurrencias
+            return text.replace(search_text, replacement)
+
+        # Encontrar todas las posiciones
+        positions = []
+        start_pos = 0
+        while True:
+            pos = text.find(search_text, start_pos)
+            if pos == -1:
+                break
+            positions.append(pos)
+            start_pos = pos + 1
+
+        # Filtrar solo las posiciones indicadas
+        positions_to_replace = [positions[i] for i in context_indices if i < len(positions)]
+
+        # Reemplazar de atrás hacia adelante para mantener índices válidos
+        for pos in reversed(positions_to_replace):
+            text = text[:pos] + replacement + text[pos + len(search_text):]
+
+        return text
 
 
 class VariableNormalizer:
