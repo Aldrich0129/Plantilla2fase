@@ -7,8 +7,9 @@ NUEVAS FUNCIONALIDADES:
 - Desidentificar variables
 - Mostrar contexto de variables
 - División libre con selector manual
-- Dividir variables por contexto seleccionado
-- Detección mejorada de fechas con "de" (día de mes de año, etc.)
+- Dividir variables por contexto: selecciona contextos para crear nueva variable
+- Detección mejorada de fechas con "de" con prioridad (día de mes de año > día de mes > mes de año)
+- Prevención de variables duplicadas por solapamiento
 """
 
 import streamlit as st
@@ -276,60 +277,68 @@ def split_variable_free(var_id: str, start_idx: int, end_idx: int, new_var_name:
     st.rerun()
 
 
-def split_variable_by_context(var_id: str, contexts_groups: dict):
+def split_variable_by_context(var_id: str, selected_context_indices: list, new_var_name: str, total_contexts: int):
     """
-    Divide una variable en múltiples variables según los contextos seleccionados.
+    Divide una variable en dos según los contextos seleccionados.
 
     Args:
         var_id: ID de la variable a dividir
-        contexts_groups: Dict donde cada key es el nuevo nombre de variable y
-                        el value es la lista de índices de contextos
-    Ejemplo: {'mes_de_cierre': [0, 1, 2], 'mes_de_facturacion': [3, 4]}
+        selected_context_indices: Lista de índices de contextos para la nueva variable
+        new_var_name: Nombre para la nueva variable con los contextos seleccionados
+        total_contexts: Número total de contextos de la variable
     """
     if var_id not in st.session_state.variables:
         st.error(f"Variable {var_id} no encontrada")
         return
 
-    if not contexts_groups or len(contexts_groups) < 2:
-        st.error("Debes crear al menos 2 grupos de contextos")
+    if not selected_context_indices:
+        st.error("Debes seleccionar al menos un contexto para separar")
+        return
+
+    if not new_var_name.strip():
+        st.error("Debes proporcionar un nombre para la nueva variable")
         return
 
     var_info = st.session_state.variables[var_id]
 
-    # Crear las nuevas variables para cada grupo
-    for new_var_name, context_indices in contexts_groups.items():
-        if not context_indices:
-            continue
+    # Determinar los índices que quedan para la variable original
+    remaining_indices = [i for i in range(total_contexts) if i not in selected_context_indices]
 
-        new_var_id = VariableNormalizer.normalize_name(new_var_name)
+    if not remaining_indices:
+        st.error("Debes dejar al menos un contexto para la variable original")
+        return
 
-        # Evitar duplicados
-        suffix = 1
-        original_new_var_id = new_var_id
-        while new_var_id in st.session_state.variables:
-            new_var_id = f"{original_new_var_id}_{suffix}"
-            suffix += 1
+    # Normalizar nombre de la nueva variable
+    new_var_id = VariableNormalizer.normalize_name(new_var_name)
 
-        # Crear la nueva variable con los contextos específicos
-        st.session_state.variables[new_var_id] = {
-            'original_text': var_info['original_text'],
-            'tipo': var_info['tipo'],
-            'pattern': var_info['pattern'],
-            'pregunta': '',
-            'opciones': var_info.get('opciones', []),
-            'disabled': False,
-            'context_indices': context_indices  # Guardar los índices de contexto
-        }
+    # Evitar duplicados
+    suffix = 1
+    original_new_var_id = new_var_id
+    while new_var_id in st.session_state.variables:
+        new_var_id = f"{original_new_var_id}_{suffix}"
+        suffix += 1
 
-    # Eliminar la variable original
-    del st.session_state.variables[var_id]
+    # Crear la nueva variable con los contextos seleccionados
+    st.session_state.variables[new_var_id] = {
+        'original_text': var_info['original_text'],
+        'tipo': var_info['tipo'],
+        'pattern': var_info['pattern'],
+        'pregunta': '',
+        'opciones': var_info.get('opciones', []),
+        'disabled': False,
+        'context_indices': selected_context_indices  # Guardar los índices de contexto
+    }
 
-    # Mantener expandida la primera variable nueva creada
-    first_new_var = list(contexts_groups.keys())[0] if contexts_groups else None
-    if first_new_var:
-        st.session_state.last_edited_variable = VariableNormalizer.normalize_name(first_new_var)
+    # Actualizar la variable original con los contextos restantes
+    st.session_state.variables[var_id]['context_indices'] = remaining_indices
 
-    st.success(f"✅ Variable `{var_id}` dividida en {len(contexts_groups)} variables por contexto")
+    # Limpiar el estado de selección de contextos para evitar conflictos
+    if f'selected_contexts_{var_id}' in st.session_state:
+        del st.session_state[f'selected_contexts_{var_id}']
+
+    st.session_state.last_edited_variable = var_id  # Mantener expandida la variable original
+
+    # Rerun sin mensajes (los mensajes se pierden en el rerun de todos modos)
     st.rerun()
 
 
@@ -416,10 +425,13 @@ def main():
         ### 🆕 Nuevas funciones:
         - 🔗 Patrón combinado (AND)
         - 🗑️ Desactivar variables
-        - 📍 Ver contexto
+        - 📍 Ver contexto de variables
         - ✂️ División libre
-        - 🎯 División por contexto
-        - 📅 Fechas con "de"
+        - 🎯 División por contexto:
+          - Marca contextos deseados
+          - Crea nueva variable con ellos
+          - Original mantiene los restantes
+        - 📅 Fechas con "de" (con prioridad)
         """)
     
     # Paso 1: Subir documento
@@ -737,183 +749,308 @@ def main():
                 is_expanded = (var_id == st.session_state.last_edited_variable)
 
                 with st.expander(label, expanded=is_expanded):
-                    # Botón desactivar/activar
-                    if is_disabled:
-                        if st.button("✅ Reactivar", key=f"en_{var_id}"):
+                    # Barra superior con información clave
+                    top_col1, top_col2, top_col3 = st.columns([2, 2, 1])
+                    with top_col1:
+                        st.markdown(f"**📝 Original:** `{var_info['original_text']}`")
+                    with top_col2:
+                        st.markdown(f"**🏷️ Tipo:** `{var_info['tipo']}` | **📐 Patrón:** `{var_info.get('pattern', 'N/A')}`")
+                    with top_col3:
+                        if st.button("🗑️ Desactivar" if not is_disabled else "✅ Reactivar", key=f"toggle_{var_id}", use_container_width=True):
                             toggle_variable_enabled(var_id)
+
+                    if is_disabled:
                         st.warning("⚠️ Variable desactivada (no aparecerá en YAML)")
                         continue
-                    else:
-                        if st.button("🗑️ Desactivar", key=f"dis_{var_id}"):
-                            toggle_variable_enabled(var_id)
-                    
+
                     st.markdown("---")
-                    
-                    # 🆕 CONTEXTO (CON CHECKBOX EN LUGAR DE EXPANDER)
-                    show_context = st.checkbox("📍 Ver contexto", key=f"ctx_{var_id}")
-                    if show_context:
+
+                    # TABS PARA ORGANIZAR FUNCIONALIDADES
+                    tab1, tab2, tab3 = st.tabs(["📋 Configuración", "✂️ Dividir Variable", "📍 Contexto"])
+
+                    # ============ TAB 1: CONFIGURACIÓN ============
+                    with tab1:
+                        conf_col1, conf_col2 = st.columns(2)
+
+                        with conf_col1:
+                            st.markdown("### 🎯 Tipo y Opciones")
+                            TIPOS = ['texto', 'numero', 'fecha', 'hora', 'email', 'telefono', 'lista', 'moneda']
+                            tipo = st.selectbox(
+                                "Tipo de dato:",
+                                TIPOS,
+                                index=TIPOS.index(var_info['tipo']) if var_info['tipo'] in TIPOS else 0,
+                                key=f"tipo_{var_id}",
+                                help="Selecciona el tipo de dato para validación y formato"
+                            )
+                            st.session_state.variables[var_id]['tipo'] = tipo
+
+                            # Opciones específicas según tipo
+                            if tipo == 'lista':
+                                st.markdown("**📋 Opciones de la lista:**")
+                                opts = st.text_area(
+                                    "Una opción por línea:",
+                                    "\n".join(var_info.get('opciones', [])),
+                                    key=f"opts_{var_id}",
+                                    height=150,
+                                    help="Escribe cada opción en una línea nueva"
+                                )
+                                st.session_state.variables[var_id]['opciones'] = [o.strip() for o in opts.split('\n') if o.strip()]
+                                if var_info.get('opciones'):
+                                    st.success(f"✅ {len(var_info['opciones'])} opciones configuradas")
+
+                            elif tipo == 'moneda':
+                                st.markdown("**💰 Configuración de moneda:**")
+                                mon = st.selectbox(
+                                    "Moneda:",
+                                    ['EUR', 'USD'],
+                                    format_func=lambda x: f"{x} ({'€' if x=='EUR' else '$'})",
+                                    key=f"mon_{var_id}"
+                                )
+                                meta = st.session_state.variables[var_id].get('meta', {})
+                                meta['currency'] = mon
+                                st.session_state.variables[var_id]['meta'] = meta
+
+                            elif tipo == 'telefono':
+                                st.markdown("**📱 Configuración de teléfono:**")
+                                PREF = [('España', '+34'), ('Francia', '+33'), ('Portugal', '+351'),
+                                        ('Italia', '+39'), ('Alemania', '+49'), ('Reino Unido', '+44'),
+                                        ('USA', '+1'), ('México', '+52'), ('Argentina', '+54')]
+                                def_idx = 0
+                                prev_meta = st.session_state.variables[var_id].get('meta', {})
+                                if 'country_code' in prev_meta:
+                                    for i, (_, c) in enumerate(PREF):
+                                        if c == prev_meta['country_code']:
+                                            def_idx = i
+                                            break
+                                sel = st.selectbox(
+                                    "Prefijo internacional:",
+                                    range(len(PREF)),
+                                    format_func=lambda i: f"{PREF[i][0]} ({PREF[i][1]})",
+                                    index=def_idx,
+                                    key=f"tel_{var_id}"
+                                )
+                                meta = st.session_state.variables[var_id].get('meta', {})
+                                meta['country_code'] = PREF[sel][1]
+                                st.session_state.variables[var_id]['meta'] = meta
+
+                        with conf_col2:
+                            st.markdown("### ❓ Pregunta al Usuario")
+                            preg = st.text_area(
+                                "Pregunta personalizada:",
+                                var_info.get('pregunta', ''),
+                                key=f"preg_{var_id}",
+                                height=100,
+                                help="Esta pregunta aparecerá en el formulario de Fase 2"
+                            )
+                            st.session_state.variables[var_id]['pregunta'] = preg
+
+                            auto = VariableNormalizer.generate_default_question(var_id, tipo)
+                            st.info(f"**💡 Sugerencia automática:**\n{auto}")
+
+                            st.markdown("### 🔖 Identificador")
+                            st.text_input(
+                                "Nombre de variable:",
+                                value=var_id,
+                                key=f"name_{var_id}",
+                                disabled=True,
+                                help="Este es el identificador único en la plantilla"
+                            )
+
+                    # ============ TAB 2: DIVIDIR VARIABLE ============
+                    with tab2:
+                        st.markdown("### ✂️ Opciones de División")
+                        st.caption("Divide esta variable en múltiples variables según diferentes criterios")
+
+                        div_tab1, div_tab2, div_tab3 = st.tabs(["🔤 Por Delimitador", "🎯 Selección Libre", "📍 Por Contexto"])
+
+                        # Sub-tab: División por delimitador
+                        with div_tab1:
+                            st.markdown("**Divide el texto usando un carácter delimitador**")
+                            st.caption(f"Texto actual: `{var_info['original_text']}`")
+
+                            dcol1, dcol2 = st.columns([3, 1])
+                            with dcol1:
+                                delim = st.text_input(
+                                    "Delimitador:",
+                                    "/",
+                                    key=f"delim_{var_id}",
+                                    max_chars=3,
+                                    help="Ej: '/' para 'día/mes/año' → 'día', 'mes', 'año'"
+                                )
+                            with dcol2:
+                                st.write("")
+                                st.write("")
+                                if st.button("✂️ Dividir", key=f"split_{var_id}", use_container_width=True):
+                                    split_variable(var_id, delim)
+
+                            # Preview
+                            if delim and delim in var_info['original_text']:
+                                parts = [p.strip() for p in var_info['original_text'].split(delim) if p.strip()]
+                                st.success(f"✅ Se crearán {len(parts)} variables: {', '.join([f'`{p}`' for p in parts])}")
+
+                        # Sub-tab: División libre
+                        with div_tab2:
+                            st.markdown("**Selecciona manualmente una porción del texto**")
+                            st.caption(f"Texto: `{var_info['original_text']}` ({len(var_info['original_text'])} caracteres)")
+
+                            fcol1, fcol2 = st.columns(2)
+                            with fcol1:
+                                start = st.number_input(
+                                    "Desde (índice):",
+                                    0,
+                                    len(var_info['original_text']),
+                                    0,
+                                    key=f"fs_{var_id}",
+                                    help="Carácter inicial (0-based)"
+                                )
+                            with fcol2:
+                                end = st.number_input(
+                                    "Hasta (índice):",
+                                    0,
+                                    len(var_info['original_text']),
+                                    min(5, len(var_info['original_text'])),
+                                    key=f"fe_{var_id}",
+                                    help="Carácter final (no incluido)"
+                                )
+
+                            if start < end:
+                                prev = var_info['original_text'][start:end]
+                                st.info(f"📌 **Texto seleccionado:** `{prev}`")
+
+                                fname_col1, fname_col2 = st.columns([3, 1])
+                                with fname_col1:
+                                    fname = st.text_input(
+                                        "Nombre para nueva variable:",
+                                        VariableNormalizer.normalize_name(prev),
+                                        key=f"fn_{var_id}"
+                                    )
+                                with fname_col2:
+                                    st.write("")
+                                    st.write("")
+                                    if st.button("✨ Crear", key=f"fsplit_{var_id}", use_container_width=True):
+                                        split_variable_free(var_id, start, end, fname)
+
+                        # Sub-tab: División por contexto
+                        with div_tab3:
+                            st.markdown("**Ver dónde aparece la variable y separar por ubicación**")
+
+                            try:
+                                if file_extension == 'docx':
+                                    contexts = PatternDetector.extract_variable_context(doc, var_info['original_text'], 20)
+                                else:
+                                    contexts = PatternDetector.extract_variable_context_pptx(prs, var_info['original_text'], 20)
+
+                                if contexts:
+                                    st.markdown(f"**📍 {len(contexts)} apariciones encontradas:**")
+
+                                    # Mostrar todos los contextos
+                                    for i, ctx in enumerate(contexts):
+                                        st.markdown(f"**{i+1}.** ({ctx['location']}): `{ctx['before']}`**`{ctx['variable']}`**`{ctx['after']}`")
+
+                                    if len(contexts) > 1:
+                                        st.markdown("---")
+                                        st.markdown("**✂️ Separar por contextos seleccionados:**")
+                                        st.caption("Marca los contextos que quieres separar en una nueva variable")
+
+                                        # Inicializar estado
+                                        if f'selected_contexts_{var_id}' not in st.session_state:
+                                            st.session_state[f'selected_contexts_{var_id}'] = []
+
+                                        # Checkboxes para seleccionar contextos
+                                        selected_contexts = []
+                                        for ctx_idx, ctx in enumerate(contexts):
+                                            if st.checkbox(
+                                                f"📌 Contexto {ctx_idx + 1}: {ctx['location']}",
+                                                value=ctx_idx in st.session_state[f'selected_contexts_{var_id}'],
+                                                key=f"ctx_check_{var_id}_{ctx_idx}"
+                                            ):
+                                                selected_contexts.append(ctx_idx)
+
+                                        st.session_state[f'selected_contexts_{var_id}'] = selected_contexts
+
+                                        # Resumen de selección
+                                        if selected_contexts:
+                                            remaining = len(contexts) - len(selected_contexts)
+                                            st.success(f"✅ Seleccionados: **{len(selected_contexts)}** contextos | Quedan: **{remaining}** para `{var_id}`")
+
+                                            # Nombre y botón de separar
+                                            sep_col1, sep_col2 = st.columns([3, 1])
+                                            with sep_col1:
+                                                new_var_name = st.text_input(
+                                                    "Nombre de la nueva variable:",
+                                                    value=f"{var_id}_separada",
+                                                    key=f"new_name_{var_id}",
+                                                    help="Variable con contextos seleccionados"
+                                                )
+                                            with sep_col2:
+                                                st.write("")
+                                                st.write("")
+                                                if st.button("✨ Separar", key=f"exec_split_{var_id}", type="primary", use_container_width=True):
+                                                    if new_var_name.strip():
+                                                        split_variable_by_context(var_id, selected_contexts, new_var_name, len(contexts))
+                                                    else:
+                                                        st.error("Proporciona un nombre válido")
+                                        else:
+                                            st.info("ℹ️ Marca al menos un contexto para separar")
+                                    else:
+                                        st.info("ℹ️ Solo hay 1 contexto, no se puede dividir")
+                                else:
+                                    st.info("No se encontraron apariciones de esta variable en el documento")
+                            except Exception as e:
+                                st.error(f"❌ Error al extraer contextos: {e}")
+
+                    # ============ TAB 3: CONTEXTO ============
+                    with tab3:
+                        st.markdown("### 📍 Ubicación en el Documento")
+                        st.caption("Explora dónde aparece esta variable en el documento")
+
                         try:
                             if file_extension == 'docx':
-                                contexts = PatternDetector.extract_variable_context(doc, var_info['original_text'], 20)
+                                contexts = PatternDetector.extract_variable_context(doc, var_info['original_text'], 30)
                             else:
-                                contexts = PatternDetector.extract_variable_context_pptx(prs, var_info['original_text'], 20)
+                                contexts = PatternDetector.extract_variable_context_pptx(prs, var_info['original_text'], 30)
 
                             if contexts:
+                                # Estadísticas
+                                ctx_stat_col1, ctx_stat_col2, ctx_stat_col3 = st.columns(3)
+                                with ctx_stat_col1:
+                                    st.metric("Total de apariciones", len(contexts))
+                                with ctx_stat_col2:
+                                    locations = list(set([c['location'].split(',')[0] for c in contexts]))
+                                    st.metric("Ubicaciones únicas", len(locations))
+                                with ctx_stat_col3:
+                                    if var_info.get('context_indices'):
+                                        st.metric("Contextos activos", len(var_info['context_indices']))
+                                    else:
+                                        st.metric("Estado", "Todos", delta="Original")
+
+                                st.markdown("---")
+
+                                # Mostrar cada contexto con mejor formato
                                 for i, ctx in enumerate(contexts):
-                                    st.markdown(f"**{i+1}.** ({ctx['location']}): `{ctx['before']}`**`{ctx['variable']}`**`{ctx['after']}`")
+                                    # Indicador visual si este contexto está activo
+                                    is_active = True
+                                    if var_info.get('context_indices') is not None:
+                                        is_active = i in var_info['context_indices']
 
-                                # 🆕 DIVIDIR POR CONTEXTO
-                                if len(contexts) > 1:
-                                    st.markdown("---")
-                                    st.markdown("**✂️ Dividir por contexto:**")
+                                    status_icon = "✅" if is_active else "⏸️"
 
-                                    # Inicializar estado para grupos de contexto
-                                    if f'context_groups_{var_id}' not in st.session_state:
-                                        st.session_state[f'context_groups_{var_id}'] = []
+                                    with st.container():
+                                        st.markdown(f"{status_icon} **Contexto {i+1}** - *{ctx['location']}*")
+                                        st.code(f"{ctx['before']}【{ctx['variable']}】{ctx['after']}", language=None)
+                                        if not is_active:
+                                            st.caption("⏸️ Este contexto pertenece a otra variable separada")
+                                        st.markdown("")
 
-                                    # Botón para añadir grupo
-                                    if st.button("➕ Añadir grupo", key=f"add_group_{var_id}"):
-                                        st.session_state[f'context_groups_{var_id}'].append({
-                                            'name': '',
-                                            'contexts': []
-                                        })
-                                        st.session_state.last_edited_variable = var_id  # Mantener expandida
-                                        st.rerun()
+                                # Info adicional
+                                if var_info.get('context_indices'):
+                                    st.info(f"ℹ️ Esta variable fue separada por contexto y solo usa {len(var_info['context_indices'])} de {len(contexts)} apariciones")
 
-                                    # Mostrar grupos existentes
-                                    groups = st.session_state[f'context_groups_{var_id}']
-                                    if groups:
-                                        for group_idx, group in enumerate(groups):
-                                            with st.container():
-                                                st.markdown(f"**Grupo {group_idx + 1}:**")
-
-                                                gcol1, gcol2 = st.columns([2, 1])
-                                                with gcol1:
-                                                    group['name'] = st.text_input(
-                                                        "Nombre:",
-                                                        value=group['name'],
-                                                        key=f"gname_{var_id}_{group_idx}",
-                                                        placeholder="ej: mes_de_cierre"
-                                                    )
-
-                                                with gcol2:
-                                                    if st.button("🗑️", key=f"del_group_{var_id}_{group_idx}"):
-                                                        st.session_state[f'context_groups_{var_id}'].pop(group_idx)
-                                                        st.session_state.last_edited_variable = var_id  # Mantener expandida
-                                                        st.rerun()
-
-                                                # Seleccionar contextos para este grupo
-                                                selected_contexts = []
-                                                for ctx_idx in range(len(contexts)):
-                                                    is_selected = ctx_idx in group['contexts']
-                                                    if st.checkbox(
-                                                        f"Contexto {ctx_idx + 1}: {contexts[ctx_idx]['location']}",
-                                                        value=is_selected,
-                                                        key=f"ctx_sel_{var_id}_{group_idx}_{ctx_idx}"
-                                                    ):
-                                                        selected_contexts.append(ctx_idx)
-
-                                                group['contexts'] = selected_contexts
-                                                st.markdown("---")
-
-                                        # Botón para ejecutar división
-                                        if len(groups) >= 2:
-                                            if st.button("✨ Dividir variable", key=f"exec_split_{var_id}", type="primary"):
-                                                # Validar que todos los grupos tengan nombre y contextos
-                                                valid = True
-                                                contexts_dict = {}
-
-                                                for group in groups:
-                                                    if not group['name'].strip():
-                                                        st.error("Todos los grupos deben tener nombre")
-                                                        valid = False
-                                                        break
-                                                    if not group['contexts']:
-                                                        st.error("Todos los grupos deben tener al menos un contexto")
-                                                        valid = False
-                                                        break
-                                                    contexts_dict[group['name']] = group['contexts']
-
-                                                if valid:
-                                                    split_variable_by_context(var_id, contexts_dict)
-                                        else:
-                                            st.info("Añade al menos 2 grupos para dividir")
                             else:
-                                st.info("No se encontraron apariciones")
+                                st.warning("⚠️ No se encontraron apariciones de esta variable en el documento")
+
                         except Exception as e:
-                            st.warning(f"No se pudo extraer contexto: {e}")
-                    
-                    st.markdown("---")
-                    
-                    col1, col2, col3 = st.columns(3)
-                    
-                    with col1:
-                        st.text_input("Original:", value=var_info['original_text'], disabled=True, key=f"orig_{var_id}")
-                        st.text_input("Nombre:", value=var_id, key=f"name_{var_id}")
-                        
-                        # División por delimitador
-                        st.markdown("**✂️ Dividir por delimitador:**")
-                        ca, cb = st.columns(2)
-                        with ca:
-                            delim = st.text_input("Delim:", "/", key=f"delim_{var_id}", max_chars=3)
-                        with cb:
-                            st.write("")
-                            if st.button("✂️", key=f"split_{var_id}"):
-                                split_variable(var_id, delim)
-                        
-                        # 🆕 División libre
-                        st.markdown("**✂️ División libre:**")
-                        st.caption(f"Texto: `{var_info['original_text']}` ({len(var_info['original_text'])} chars)")
-                        fc1, fc2 = st.columns(2)
-                        with fc1:
-                            start = st.number_input("Desde:", 0, len(var_info['original_text']), 0, key=f"fs_{var_id}")
-                        with fc2:
-                            end = st.number_input("Hasta:", 0, len(var_info['original_text']), min(5, len(var_info['original_text'])), key=f"fe_{var_id}")
-                        
-                        if start < end:
-                            prev = var_info['original_text'][start:end]
-                            st.info(f"📌 `{prev}`")
-                            fname = st.text_input("Nombre:", VariableNormalizer.normalize_name(prev), key=f"fn_{var_id}")
-                            if st.button("✨ Crear", key=f"fsplit_{var_id}"):
-                                split_variable_free(var_id, start, end, fname)
-                    
-                    with col2:
-                        TIPOS = ['texto', 'numero', 'fecha', 'hora', 'email', 'telefono', 'lista', 'moneda']
-                        tipo = st.selectbox("Tipo:", TIPOS, index=TIPOS.index(var_info['tipo']) if var_info['tipo'] in TIPOS else 0, key=f"tipo_{var_id}")
-                        st.session_state.variables[var_id]['tipo'] = tipo
-                        
-                        if tipo == 'lista':
-                            opts = st.text_area("Opciones:", "\n".join(var_info.get('opciones', [])), key=f"opts_{var_id}", height=100)
-                            st.session_state.variables[var_id]['opciones'] = [o.strip() for o in opts.split('\n') if o.strip()]
-                            if var_info.get('opciones'):
-                                st.success(f"✨ {len(var_info['opciones'])} opciones")
-                        
-                        elif tipo == 'moneda':
-                            mon = st.selectbox("Moneda:", ['EUR', 'USD'], format_func=lambda x: f"{x} ({'€' if x=='EUR' else '$'})", key=f"mon_{var_id}")
-                            meta = st.session_state.variables[var_id].get('meta', {})
-                            meta['currency'] = mon
-                            st.session_state.variables[var_id]['meta'] = meta
-                        
-                        elif tipo == 'telefono':
-                            PREF = [('España', '+34'), ('Francia', '+33'), ('Portugal', '+351'), ('Italia', '+39'), ('Alemania', '+49'), 
-                                    ('Reino Unido', '+44'), ('USA', '+1'), ('México', '+52'), ('Argentina', '+54')]
-                            def_idx = 0
-                            prev_meta = st.session_state.variables[var_id].get('meta', {})
-                            if 'country_code' in prev_meta:
-                                for i, (_, c) in enumerate(PREF):
-                                    if c == prev_meta['country_code']:
-                                        def_idx = i
-                                        break
-                            sel = st.selectbox("Prefijo:", range(len(PREF)), format_func=lambda i: f"{PREF[i][0]} ({PREF[i][1]})", index=def_idx, key=f"tel_{var_id}")
-                            meta = st.session_state.variables[var_id].get('meta', {})
-                            meta['country_code'] = PREF[sel][1]
-                            st.session_state.variables[var_id]['meta'] = meta
-                    
-                    with col3:
-                        preg = st.text_input("Pregunta:", var_info.get('pregunta', ''), key=f"preg_{var_id}")
-                        st.session_state.variables[var_id]['pregunta'] = preg
-                        auto = VariableNormalizer.generate_default_question(var_id, tipo)
-                        st.info(f"**Auto:** {auto}")
+                            st.error(f"❌ Error al extraer contextos: {e}")
             
             # Generar plantilla
             st.markdown("---")
