@@ -952,61 +952,46 @@ def main():
                                         st.markdown("**✂️ Separar por contextos seleccionados:**")
                                         st.caption("Marca los contextos que quieres separar en una nueva variable")
 
-                                        # Inicializar estado
-                                        if f'selected_contexts_{var_id}' not in st.session_state:
-                                            st.session_state[f'selected_contexts_{var_id}'] = []
-
-                                        # Checkboxes para seleccionar contextos
-                                        selected_contexts = []
-                                        for ctx_idx, ctx in enumerate(contexts):
-                                            checkbox_value = st.checkbox(
-                                                f"📌 Contexto {ctx_idx + 1}: {ctx['location']}",
-                                                value=ctx_idx in st.session_state[f'selected_contexts_{var_id}'],
-                                                key=f"ctx_check_{var_id}_{ctx_idx}",
-                                                on_change=lambda v=var_id: st.session_state.update({'last_edited_variable': v})
-                                            )
-                                            if checkbox_value:
-                                                selected_contexts.append(ctx_idx)
-
-                                        st.session_state[f'selected_contexts_{var_id}'] = selected_contexts
-
-                                        # Resumen de selección
-                                        if selected_contexts:
-                                            remaining = len(contexts) - len(selected_contexts)
-                                            st.success(f"✅ Seleccionados: **{len(selected_contexts)}** contextos | Quedan: **{remaining}** para `{var_id}`")
-
-                                            # Nombre y botón de separar
-                                            sep_col1, sep_col2 = st.columns([3, 1])
-                                            with sep_col1:
-                                                new_var_name = st.text_input(
-                                                    "Nombre de la nueva variable:",
-                                                    value=f"{var_id}_separada",
-                                                    key=f"new_name_{var_id}",
-                                                    help="Variable con contextos seleccionados"
+                                        # Usar FORM para evitar reruns al marcar checkboxes
+                                        with st.form(key=f"form_split_context_{var_id}"):
+                                            # Checkboxes para seleccionar contextos
+                                            selected_contexts = []
+                                            for ctx_idx, ctx in enumerate(contexts):
+                                                checkbox_value = st.checkbox(
+                                                    f"📌 Contexto {ctx_idx + 1}: {ctx['location']}",
+                                                    value=False,  # Siempre empieza desmarcado en cada render del form
+                                                    key=f"ctx_check_form_{var_id}_{ctx_idx}"
                                                 )
-                                            with sep_col2:
-                                                st.write("")
-                                                st.write("")
+                                                if checkbox_value:
+                                                    selected_contexts.append(ctx_idx)
 
-                                                # Verificar si ya se procesó esta separación
-                                                split_done_key = f'split_done_{var_id}'
-                                                if st.session_state.get(split_done_key, False):
-                                                    # Ya se procesó, limpiar el flag
-                                                    st.session_state[split_done_key] = False
+                                            # Mostrar resumen dinámico (dentro del form)
+                                            if selected_contexts:
+                                                remaining = len(contexts) - len(selected_contexts)
+                                                st.success(f"✅ Seleccionados: **{len(selected_contexts)}** contextos | Quedan: **{remaining}** para `{var_id}`")
 
-                                                button_clicked = st.button("✨ Separar", key=f"exec_split_{var_id}", type="primary", use_container_width=True)
+                                            # Nombre de la nueva variable
+                                            new_var_name = st.text_input(
+                                                "Nombre de la nueva variable:",
+                                                value=f"{var_id}_separada",
+                                                key=f"new_name_form_{var_id}",
+                                                help="Variable con contextos seleccionados"
+                                            )
 
-                                                if button_clicked and not st.session_state.get(split_done_key, False):
-                                                    if new_var_name.strip() and selected_contexts:
-                                                        # Marcar como procesado para evitar re-ejecuciones
-                                                        st.session_state[split_done_key] = True
-                                                        split_variable_by_context(var_id, selected_contexts, new_var_name, len(contexts))
-                                                    elif not new_var_name.strip():
-                                                        st.error("Proporciona un nombre válido")
-                                                    else:
-                                                        st.error("Debes seleccionar al menos un contexto")
-                                        else:
-                                            st.info("ℹ️ Marca al menos un contexto para separar")
+                                            # Botón de submit del form
+                                            submitted = st.form_submit_button("✨ Separar", type="primary", use_container_width=True)
+
+                                            # Procesar solo cuando se hace submit del form
+                                            if submitted:
+                                                if not selected_contexts:
+                                                    st.error("❌ Debes seleccionar al menos un contexto")
+                                                elif not new_var_name.strip():
+                                                    st.error("❌ Debes proporcionar un nombre válido")
+                                                else:
+                                                    # Actualizar last_edited_variable antes del rerun
+                                                    st.session_state.last_edited_variable = var_id
+                                                    # Ejecutar la separación
+                                                    split_variable_by_context(var_id, selected_contexts, new_var_name, len(contexts))
                                     else:
                                         st.info("ℹ️ Solo hay 1 contexto, no se puede dividir")
                                 else:
