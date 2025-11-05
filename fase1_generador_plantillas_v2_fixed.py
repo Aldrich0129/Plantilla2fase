@@ -7,8 +7,9 @@ NUEVAS FUNCIONALIDADES:
 - Desidentificar variables
 - Mostrar contexto de variables
 - División libre con selector manual
-- Dividir variables por contexto seleccionado
-- Detección mejorada de fechas con "de" (día de mes de año, etc.)
+- Dividir variables por contexto: selecciona contextos para crear nueva variable
+- Detección mejorada de fechas con "de" con prioridad (día de mes de año > día de mes > mes de año)
+- Prevención de variables duplicadas por solapamiento
 """
 
 import streamlit as st
@@ -276,60 +277,74 @@ def split_variable_free(var_id: str, start_idx: int, end_idx: int, new_var_name:
     st.rerun()
 
 
-def split_variable_by_context(var_id: str, contexts_groups: dict):
+def split_variable_by_context(var_id: str, selected_context_indices: list, new_var_name: str):
     """
-    Divide una variable en múltiples variables según los contextos seleccionados.
+    Divide una variable en dos según los contextos seleccionados.
 
     Args:
         var_id: ID de la variable a dividir
-        contexts_groups: Dict donde cada key es el nuevo nombre de variable y
-                        el value es la lista de índices de contextos
-    Ejemplo: {'mes_de_cierre': [0, 1, 2], 'mes_de_facturacion': [3, 4]}
+        selected_context_indices: Lista de índices de contextos para la nueva variable
+        new_var_name: Nombre para la nueva variable con los contextos seleccionados
     """
     if var_id not in st.session_state.variables:
         st.error(f"Variable {var_id} no encontrada")
         return
 
-    if not contexts_groups or len(contexts_groups) < 2:
-        st.error("Debes crear al menos 2 grupos de contextos")
+    if not selected_context_indices:
+        st.error("Debes seleccionar al menos un contexto para separar")
+        return
+
+    if not new_var_name.strip():
+        st.error("Debes proporcionar un nombre para la nueva variable")
         return
 
     var_info = st.session_state.variables[var_id]
 
-    # Crear las nuevas variables para cada grupo
-    for new_var_name, context_indices in contexts_groups.items():
-        if not context_indices:
-            continue
+    # Determinar los índices que quedan para la variable original
+    # Primero necesitamos saber cuántos contextos hay en total
+    doc = st.session_state.original_doc
+    doc_type = st.session_state.doc_type
 
-        new_var_id = VariableNormalizer.normalize_name(new_var_name)
+    if doc_type == 'docx':
+        from utils_v2 import PatternDetector
+        all_contexts = PatternDetector.extract_variable_context(doc, var_info['original_text'], 20)
+    else:
+        from utils_v2 import PatternDetector
+        all_contexts = PatternDetector.extract_variable_context_pptx(doc, var_info['original_text'], 20)
 
-        # Evitar duplicados
-        suffix = 1
-        original_new_var_id = new_var_id
-        while new_var_id in st.session_state.variables:
-            new_var_id = f"{original_new_var_id}_{suffix}"
-            suffix += 1
+    total_contexts = len(all_contexts)
+    remaining_indices = [i for i in range(total_contexts) if i not in selected_context_indices]
 
-        # Crear la nueva variable con los contextos específicos
-        st.session_state.variables[new_var_id] = {
-            'original_text': var_info['original_text'],
-            'tipo': var_info['tipo'],
-            'pattern': var_info['pattern'],
-            'pregunta': '',
-            'opciones': var_info.get('opciones', []),
-            'disabled': False,
-            'context_indices': context_indices  # Guardar los índices de contexto
-        }
+    if not remaining_indices:
+        st.error("Debes dejar al menos un contexto para la variable original")
+        return
 
-    # Eliminar la variable original
-    del st.session_state.variables[var_id]
+    # Normalizar nombre de la nueva variable
+    new_var_id = VariableNormalizer.normalize_name(new_var_name)
 
-    # Mantener expandida la primera variable nueva creada
-    first_new_var = list(contexts_groups.keys())[0] if contexts_groups else None
-    if first_new_var:
-        st.session_state.last_edited_variable = VariableNormalizer.normalize_name(first_new_var)
+    # Evitar duplicados
+    suffix = 1
+    original_new_var_id = new_var_id
+    while new_var_id in st.session_state.variables:
+        new_var_id = f"{original_new_var_id}_{suffix}"
+        suffix += 1
 
-    st.success(f"✅ Variable `{var_id}` dividida en {len(contexts_groups)} variables por contexto")
+    # Crear la nueva variable con los contextos seleccionados
+    st.session_state.variables[new_var_id] = {
+        'original_text': var_info['original_text'],
+        'tipo': var_info['tipo'],
+        'pattern': var_info['pattern'],
+        'pregunta': '',
+        'opciones': var_info.get('opciones', []),
+        'disabled': False,
+        'context_indices': selected_context_indices  # Guardar los índices de contexto
+    }
+
+    # Actualizar la variable original con los contextos restantes
+    st.session_state.variables[var_id]['context_indices'] = remaining_indices
+
+    st.session_state.last_edited_variable = var_id  # Mantener expandida la variable original
+    st.success(f"✅ Variable `{var_id}` dividida en `{new_var_id}` ({len(selected_context_indices)} contextos) y `{var_id}` ({len(remaining_indices)} contextos)")
     st.rerun()
 
 
@@ -416,10 +431,13 @@ def main():
         ### 🆕 Nuevas funciones:
         - 🔗 Patrón combinado (AND)
         - 🗑️ Desactivar variables
-        - 📍 Ver contexto
+        - 📍 Ver contexto de variables
         - ✂️ División libre
-        - 🎯 División por contexto
-        - 📅 Fechas con "de"
+        - 🎯 División por contexto:
+          - Marca contextos deseados
+          - Crea nueva variable con ellos
+          - Original mantiene los restantes
+        - 📅 Fechas con "de" (con prioridad)
         """)
     
     # Paso 1: Subir documento
@@ -762,82 +780,53 @@ def main():
                                 for i, ctx in enumerate(contexts):
                                     st.markdown(f"**{i+1}.** ({ctx['location']}): `{ctx['before']}`**`{ctx['variable']}`**`{ctx['after']}`")
 
-                                # 🆕 DIVIDIR POR CONTEXTO
+                                # 🆕 DIVIDIR POR CONTEXTO (VERSIÓN SIMPLIFICADA)
                                 if len(contexts) > 1:
                                     st.markdown("---")
                                     st.markdown("**✂️ Dividir por contexto:**")
+                                    st.caption("Selecciona los contextos que quieres separar en una nueva variable")
 
-                                    # Inicializar estado para grupos de contexto
-                                    if f'context_groups_{var_id}' not in st.session_state:
-                                        st.session_state[f'context_groups_{var_id}'] = []
+                                    # Inicializar estado para contextos seleccionados
+                                    if f'selected_contexts_{var_id}' not in st.session_state:
+                                        st.session_state[f'selected_contexts_{var_id}'] = []
 
-                                    # Botón para añadir grupo
-                                    if st.button("➕ Añadir grupo", key=f"add_group_{var_id}"):
-                                        st.session_state[f'context_groups_{var_id}'].append({
-                                            'name': '',
-                                            'contexts': []
-                                        })
-                                        st.session_state.last_edited_variable = var_id  # Mantener expandida
-                                        st.rerun()
+                                    # Mostrar checkboxes para cada contexto
+                                    selected_contexts = []
+                                    for ctx_idx, ctx in enumerate(contexts):
+                                        if st.checkbox(
+                                            f"📌 Contexto {ctx_idx + 1}: {ctx['location']}",
+                                            value=ctx_idx in st.session_state[f'selected_contexts_{var_id}'],
+                                            key=f"ctx_check_{var_id}_{ctx_idx}"
+                                        ):
+                                            selected_contexts.append(ctx_idx)
 
-                                    # Mostrar grupos existentes
-                                    groups = st.session_state[f'context_groups_{var_id}']
-                                    if groups:
-                                        for group_idx, group in enumerate(groups):
-                                            with st.container():
-                                                st.markdown(f"**Grupo {group_idx + 1}:**")
+                                    st.session_state[f'selected_contexts_{var_id}'] = selected_contexts
 
-                                                gcol1, gcol2 = st.columns([2, 1])
-                                                with gcol1:
-                                                    group['name'] = st.text_input(
-                                                        "Nombre:",
-                                                        value=group['name'],
-                                                        key=f"gname_{var_id}_{group_idx}",
-                                                        placeholder="ej: mes_de_cierre"
-                                                    )
+                                    # Mostrar resumen
+                                    if selected_contexts:
+                                        st.info(f"✅ Seleccionados: {len(selected_contexts)} contextos | Quedan: {len(contexts) - len(selected_contexts)} contextos para `{var_id}`")
+                                    else:
+                                        st.info("ℹ️ Marca al menos un contexto para separar")
 
-                                                with gcol2:
-                                                    if st.button("🗑️", key=f"del_group_{var_id}_{group_idx}"):
-                                                        st.session_state[f'context_groups_{var_id}'].pop(group_idx)
-                                                        st.session_state.last_edited_variable = var_id  # Mantener expandida
-                                                        st.rerun()
-
-                                                # Seleccionar contextos para este grupo
-                                                selected_contexts = []
-                                                for ctx_idx in range(len(contexts)):
-                                                    is_selected = ctx_idx in group['contexts']
-                                                    if st.checkbox(
-                                                        f"Contexto {ctx_idx + 1}: {contexts[ctx_idx]['location']}",
-                                                        value=is_selected,
-                                                        key=f"ctx_sel_{var_id}_{group_idx}_{ctx_idx}"
-                                                    ):
-                                                        selected_contexts.append(ctx_idx)
-
-                                                group['contexts'] = selected_contexts
-                                                st.markdown("---")
-
-                                        # Botón para ejecutar división
-                                        if len(groups) >= 2:
-                                            if st.button("✨ Dividir variable", key=f"exec_split_{var_id}", type="primary"):
-                                                # Validar que todos los grupos tengan nombre y contextos
-                                                valid = True
-                                                contexts_dict = {}
-
-                                                for group in groups:
-                                                    if not group['name'].strip():
-                                                        st.error("Todos los grupos deben tener nombre")
-                                                        valid = False
-                                                        break
-                                                    if not group['contexts']:
-                                                        st.error("Todos los grupos deben tener al menos un contexto")
-                                                        valid = False
-                                                        break
-                                                    contexts_dict[group['name']] = group['contexts']
-
-                                                if valid:
-                                                    split_variable_by_context(var_id, contexts_dict)
-                                        else:
-                                            st.info("Añade al menos 2 grupos para dividir")
+                                    # Campo de nombre y botón de separar
+                                    if selected_contexts:
+                                        st.markdown("---")
+                                        scol1, scol2 = st.columns([2, 1])
+                                        with scol1:
+                                            new_var_name = st.text_input(
+                                                "Nombre de la nueva variable:",
+                                                value=f"{var_id}_separada",
+                                                key=f"new_name_{var_id}",
+                                                help="Nombre para la variable con los contextos seleccionados"
+                                            )
+                                        with scol2:
+                                            st.write("")
+                                            st.write("")
+                                            if st.button("✨ Separar", key=f"exec_split_{var_id}", type="primary"):
+                                                if new_var_name.strip():
+                                                    split_variable_by_context(var_id, selected_contexts, new_var_name)
+                                                else:
+                                                    st.error("Debes proporcionar un nombre para la nueva variable")
                             else:
                                 st.info("No se encontraron apariciones")
                         except Exception as e:
