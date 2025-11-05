@@ -988,10 +988,38 @@ def main():
                                                 elif not new_var_name.strip():
                                                     st.error("❌ Debes proporcionar un nombre válido")
                                                 else:
-                                                    # Actualizar last_edited_variable antes del rerun
+                                                    # Guardar la solicitud de separación en session_state
+                                                    # Usamos un timestamp único para evitar colisiones
+                                                    import time
+                                                    request_key = f'split_request_{var_id}'
+                                                    st.session_state[request_key] = {
+                                                        'var_id': var_id,
+                                                        'selected_contexts': selected_contexts.copy(),
+                                                        'new_var_name': new_var_name,
+                                                        'total_contexts': len(contexts),
+                                                        'timestamp': time.time(),
+                                                        'processed': False
+                                                    }
                                                     st.session_state.last_edited_variable = var_id
-                                                    # Ejecutar la separación
-                                                    split_variable_by_context(var_id, selected_contexts, new_var_name, len(contexts))
+                                                    st.rerun()
+
+                                        # PROCESADOR: Ejecutar FUERA del form, UNA SOLA VEZ
+                                        request_key = f'split_request_{var_id}'
+                                        if request_key in st.session_state:
+                                            request = st.session_state[request_key]
+                                            if not request['processed']:
+                                                # Marcar como procesado INMEDIATAMENTE para evitar re-ejecución
+                                                st.session_state[request_key]['processed'] = True
+                                                # Ejecutar la separación
+                                                split_variable_by_context(
+                                                    request['var_id'],
+                                                    request['selected_contexts'],
+                                                    request['new_var_name'],
+                                                    request['total_contexts']
+                                                )
+                                            else:
+                                                # Ya fue procesado, limpiar la request
+                                                del st.session_state[request_key]
                                     else:
                                         st.info("ℹ️ Solo hay 1 contexto, no se puede dividir")
                                 else:
