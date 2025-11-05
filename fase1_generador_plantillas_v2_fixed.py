@@ -959,11 +959,13 @@ def main():
                                         # Checkboxes para seleccionar contextos
                                         selected_contexts = []
                                         for ctx_idx, ctx in enumerate(contexts):
-                                            if st.checkbox(
+                                            checkbox_value = st.checkbox(
                                                 f"📌 Contexto {ctx_idx + 1}: {ctx['location']}",
                                                 value=ctx_idx in st.session_state[f'selected_contexts_{var_id}'],
-                                                key=f"ctx_check_{var_id}_{ctx_idx}"
-                                            ):
+                                                key=f"ctx_check_{var_id}_{ctx_idx}",
+                                                on_change=lambda v=var_id: st.session_state.update({'last_edited_variable': v})
+                                            )
+                                            if checkbox_value:
                                                 selected_contexts.append(ctx_idx)
 
                                         st.session_state[f'selected_contexts_{var_id}'] = selected_contexts
@@ -985,11 +987,24 @@ def main():
                                             with sep_col2:
                                                 st.write("")
                                                 st.write("")
-                                                if st.button("✨ Separar", key=f"exec_split_{var_id}", type="primary", use_container_width=True):
-                                                    if new_var_name.strip():
+
+                                                # Verificar si ya se procesó esta separación
+                                                split_done_key = f'split_done_{var_id}'
+                                                if st.session_state.get(split_done_key, False):
+                                                    # Ya se procesó, limpiar el flag
+                                                    st.session_state[split_done_key] = False
+
+                                                button_clicked = st.button("✨ Separar", key=f"exec_split_{var_id}", type="primary", use_container_width=True)
+
+                                                if button_clicked and not st.session_state.get(split_done_key, False):
+                                                    if new_var_name.strip() and selected_contexts:
+                                                        # Marcar como procesado para evitar re-ejecuciones
+                                                        st.session_state[split_done_key] = True
                                                         split_variable_by_context(var_id, selected_contexts, new_var_name, len(contexts))
-                                                    else:
+                                                    elif not new_var_name.strip():
                                                         st.error("Proporciona un nombre válido")
+                                                    else:
+                                                        st.error("Debes seleccionar al menos un contexto")
                                         else:
                                             st.info("ℹ️ Marca al menos un contexto para separar")
                                     else:
