@@ -277,7 +277,7 @@ def split_variable_free(var_id: str, start_idx: int, end_idx: int, new_var_name:
     st.rerun()
 
 
-def split_variable_by_context(var_id: str, selected_context_indices: list, new_var_name: str):
+def split_variable_by_context(var_id: str, selected_context_indices: list, new_var_name: str, total_contexts: int):
     """
     Divide una variable en dos según los contextos seleccionados.
 
@@ -285,6 +285,7 @@ def split_variable_by_context(var_id: str, selected_context_indices: list, new_v
         var_id: ID de la variable a dividir
         selected_context_indices: Lista de índices de contextos para la nueva variable
         new_var_name: Nombre para la nueva variable con los contextos seleccionados
+        total_contexts: Número total de contextos de la variable
     """
     if var_id not in st.session_state.variables:
         st.error(f"Variable {var_id} no encontrada")
@@ -301,18 +302,6 @@ def split_variable_by_context(var_id: str, selected_context_indices: list, new_v
     var_info = st.session_state.variables[var_id]
 
     # Determinar los índices que quedan para la variable original
-    # Primero necesitamos saber cuántos contextos hay en total
-    doc = st.session_state.original_doc
-    doc_type = st.session_state.doc_type
-
-    if doc_type == 'docx':
-        from utils_v2 import PatternDetector
-        all_contexts = PatternDetector.extract_variable_context(doc, var_info['original_text'], 20)
-    else:
-        from utils_v2 import PatternDetector
-        all_contexts = PatternDetector.extract_variable_context_pptx(doc, var_info['original_text'], 20)
-
-    total_contexts = len(all_contexts)
     remaining_indices = [i for i in range(total_contexts) if i not in selected_context_indices]
 
     if not remaining_indices:
@@ -343,8 +332,13 @@ def split_variable_by_context(var_id: str, selected_context_indices: list, new_v
     # Actualizar la variable original con los contextos restantes
     st.session_state.variables[var_id]['context_indices'] = remaining_indices
 
+    # Limpiar el estado de selección de contextos para evitar conflictos
+    if f'selected_contexts_{var_id}' in st.session_state:
+        del st.session_state[f'selected_contexts_{var_id}']
+
     st.session_state.last_edited_variable = var_id  # Mantener expandida la variable original
-    st.success(f"✅ Variable `{var_id}` dividida en `{new_var_id}` ({len(selected_context_indices)} contextos) y `{var_id}` ({len(remaining_indices)} contextos)")
+
+    # Rerun sin mensajes (los mensajes se pierden en el rerun de todos modos)
     st.rerun()
 
 
@@ -993,7 +987,7 @@ def main():
                                                 st.write("")
                                                 if st.button("✨ Separar", key=f"exec_split_{var_id}", type="primary", use_container_width=True):
                                                     if new_var_name.strip():
-                                                        split_variable_by_context(var_id, selected_contexts, new_var_name)
+                                                        split_variable_by_context(var_id, selected_contexts, new_var_name, len(contexts))
                                                     else:
                                                         st.error("Proporciona un nombre válido")
                                         else:
