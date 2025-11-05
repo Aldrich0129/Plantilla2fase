@@ -66,6 +66,8 @@ if 'selected_for_merge' not in st.session_state:
     st.session_state.selected_for_merge = []
 if 'last_edited_variable' not in st.session_state:
     st.session_state.last_edited_variable = None  # Mantiene la última variable editada expandida
+if 'split_context_processing' not in st.session_state:
+    st.session_state.split_context_processing = False  # Flag para evitar bucles infinitos en split_by_context
 
 
 def hex_to_color_name(hex_color):
@@ -287,16 +289,26 @@ def split_variable_by_context(var_id: str, selected_context_indices: list, new_v
         new_var_name: Nombre para la nueva variable con los contextos seleccionados
         total_contexts: Número total de contextos de la variable
     """
+    # PROTECCIÓN: Evitar bucle infinito - solo ejecutar si no está ya procesando
+    if st.session_state.split_context_processing:
+        return
+
+    # Marcar como procesando
+    st.session_state.split_context_processing = True
+
     if var_id not in st.session_state.variables:
         st.error(f"Variable {var_id} no encontrada")
+        st.session_state.split_context_processing = False
         return
 
     if not selected_context_indices:
         st.error("Debes seleccionar al menos un contexto para separar")
+        st.session_state.split_context_processing = False
         return
 
     if not new_var_name.strip():
         st.error("Debes proporcionar un nombre para la nueva variable")
+        st.session_state.split_context_processing = False
         return
 
     var_info = st.session_state.variables[var_id]
@@ -306,6 +318,7 @@ def split_variable_by_context(var_id: str, selected_context_indices: list, new_v
 
     if not remaining_indices:
         st.error("Debes dejar al menos un contexto para la variable original")
+        st.session_state.split_context_processing = False
         return
 
     # Normalizar nombre de la nueva variable
@@ -333,10 +346,17 @@ def split_variable_by_context(var_id: str, selected_context_indices: list, new_v
     st.session_state.variables[var_id]['context_indices'] = remaining_indices
 
     # Limpiar el estado de selección de contextos para evitar conflictos
+    keys_to_delete = [key for key in st.session_state.keys() if key.startswith(f'ctx_check_form_{var_id}_')]
+    for key in keys_to_delete:
+        del st.session_state[key]
+
     if f'selected_contexts_{var_id}' in st.session_state:
         del st.session_state[f'selected_contexts_{var_id}']
 
     st.session_state.last_edited_variable = var_id  # Mantener expandida la variable original
+
+    # Desmarcar el flag ANTES del rerun
+    st.session_state.split_context_processing = False
 
     # Rerun sin mensajes (los mensajes se pierden en el rerun de todos modos)
     st.rerun()
@@ -981,17 +1001,18 @@ def main():
                                             # Botón de submit del form
                                             submitted = st.form_submit_button("✨ Separar", type="primary", use_container_width=True)
 
-                                            # Procesar solo cuando se hace submit del form
-                                            if submitted:
-                                                if not selected_contexts:
-                                                    st.error("❌ Debes seleccionar al menos un contexto")
-                                                elif not new_var_name.strip():
-                                                    st.error("❌ Debes proporcionar un nombre válido")
-                                                else:
-                                                    # Actualizar last_edited_variable antes del rerun
-                                                    st.session_state.last_edited_variable = var_id
-                                                    # Ejecutar la separación
-                                                    split_variable_by_context(var_id, selected_contexts, new_var_name, len(contexts))
+                                        # Procesar FUERA del form para evitar problemas de estado
+                                        # Solo ejecutar si se hizo submit Y no está ya procesando
+                                        if submitted and not st.session_state.split_context_processing:
+                                            if not selected_contexts:
+                                                st.error("❌ Debes seleccionar al menos un contexto")
+                                            elif not new_var_name.strip():
+                                                st.error("❌ Debes proporcionar un nombre válido")
+                                            else:
+                                                # Actualizar last_edited_variable antes del rerun
+                                                st.session_state.last_edited_variable = var_id
+                                                # Ejecutar la separación
+                                                split_variable_by_context(var_id, selected_contexts, new_var_name, len(contexts))
                                     else:
                                         st.info("ℹ️ Solo hay 1 contexto, no se puede dividir")
                                 else:
