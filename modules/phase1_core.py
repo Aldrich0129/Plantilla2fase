@@ -10,7 +10,13 @@ from docx import Document
 from pptx import Presentation
 
 from utils_v2 import PatternDetector, VariableNormalizer, YAMLManager
-from .text_utils import clean_pattern_markers, infer_variable_type, sanitize_placeholders
+from .text_utils import (
+    clean_pattern_markers,
+    infer_variable_category,
+    infer_variable_type,
+    sanitize_placeholders,
+    suggest_format,
+)
 
 
 @dataclass
@@ -18,6 +24,9 @@ class DetectedVariable:
     nombre: str
     marcador_original: str
     tipo: str
+    categoria: str
+    formato: str | None
+    opciones: List[str]
 
 
 class TemplateBuilder:
@@ -43,7 +52,11 @@ class TemplateBuilder:
             for pattern in PatternDetector.TEXT_PATTERNS.values():
                 for match in PatternDetector.extract_variables_by_pattern(sanitized, pattern):
                     cleaned = clean_pattern_markers(match)
+                    options = PatternDetector.detect_list_options(cleaned)
                     normalized = VariableNormalizer.normalize_name(cleaned)
+                    var_type = infer_variable_type(cleaned, options)
+                    categoria = infer_variable_category(cleaned, var_type)
+                    formato = suggest_format(var_type)
                     placeholder_original = self._wrap_placeholder(match)
                     placeholder_normalized = f"{{{{{normalized}}}}}"
                     replacements[placeholder_original] = placeholder_normalized
@@ -51,7 +64,10 @@ class TemplateBuilder:
                         detected[normalized] = DetectedVariable(
                             nombre=normalized,
                             marcador_original=placeholder_original,
-                            tipo=infer_variable_type(cleaned),
+                            tipo=var_type,
+                            categoria=categoria,
+                            formato=formato,
+                            opciones=options,
                         )
 
         return list(detected.values()), replacements
@@ -66,9 +82,18 @@ class TemplateBuilder:
             raise ValueError("Formato no soportado. Usa .docx o .pptx")
 
         yaml_path = self.workdir / f"{file_path.stem}_variables.yaml"
-        yaml_config = YAMLManager.create_variable_config({
-            var.nombre: {"tipo": var.tipo} for var in detected_vars
-        })
+        yaml_payload = [
+            {
+                "nombre": var.nombre,
+                "tipo": var.tipo,
+                "categoria": var.categoria,
+                "placeholder": var.marcador_original,
+                "opciones": var.opciones,
+                "formato": var.formato,
+            }
+            for var in detected_vars
+        ]
+        yaml_config = YAMLManager.create_variable_config(yaml_payload)
         YAMLManager.save_yaml(yaml_config, str(yaml_path))
         return template_path, yaml_path, detected_vars
 
