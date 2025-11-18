@@ -77,24 +77,30 @@ class PatternDetector:
         
         for slide in prs.slides:
             for shape in slide.shapes:
-                if hasattr(shape, "text_frame"):
-                    for paragraph in shape.text_frame.paragraphs:
+                try:
+                    if not getattr(shape, "has_text_frame", False):
+                        continue
+                    text_frame = getattr(shape, "text_frame", None)
+                    if text_frame is None:
+                        continue
+
+                    for paragraph in text_frame.paragraphs:
                         for run in paragraph.runs:
                             try:
                                 # Verificar si el run tiene color
                                 if not run.font.color:
                                     continue
-                                
+
                                 color_obj = run.font.color
                                 rgb_value = None
-                                
+
                                 # Método 1: Intentar obtener RGB directo
                                 if hasattr(color_obj, 'rgb'):
                                     try:
                                         rgb_value = color_obj.rgb
                                     except (AttributeError, TypeError):
                                         pass
-                                
+
                                 # Método 2: Si es color de tema, intentar obtener RGB del tema
                                 if rgb_value is None and hasattr(color_obj, 'theme_color'):
                                     try:
@@ -103,15 +109,19 @@ class PatternDetector:
                                         pass
                                     except (AttributeError, TypeError):
                                         pass
-                                
+
                                 # Si obtuvimos un valor RGB válido, agregarlo
                                 if rgb_value:
                                     colors['text_colors'].add(f"#{rgb_value[0]:02x}{rgb_value[1]:02x}{rgb_value[2]:02x}")
-                                    
+
                             except Exception:
                                 # Si hay cualquier otro error, simplemente continuar
                                 # Esto evita que el programa se detenga por colores no soportados
                                 pass
+                except Exception:
+                    # Los shapes sin text frame pueden lanzar errores si se accede directamente.
+                    # Los ignoramos para evitar que falle la detección en PPTX complejos.
+                    continue
         
         return colors
     
@@ -551,30 +561,38 @@ class DocumentProcessor:
     
     @staticmethod
     def replace_in_pptx(prs: Presentation, replacements: Dict[str, str]) -> Presentation:
-        """Reemplaza variables en presentación PowerPoint manteniendo formato"""
-        
+        """Reemplaza variables en presentación PowerPoint usando el XML de los slides.
+
+        Trabajar directamente sobre el XML evita errores en shapes que no tienen text_frame
+        y permite reemplazar marcadores aunque estén divididos en varios runs.
+        """
+
+        namespaces = {
+            'a': 'http://schemas.openxmlformats.org/drawingml/2006/main'
+        }
+
         for slide in prs.slides:
-            for shape in slide.shapes:
-                if hasattr(shape, "text_frame"):
-                    DocumentProcessor._replace_in_textframe(shape.text_frame, replacements)
-                
-                # También revisar tablas
-                if hasattr(shape, "table"):
-                    for row in shape.table.rows:
-                        for cell in row.cells:
-                            DocumentProcessor._replace_in_textframe(cell.text_frame, replacements)
-        
-        return prs
-    
-    @staticmethod
-    def _replace_in_textframe(text_frame, replacements: Dict[str, str]):
-        """Reemplaza texto en un text_frame de PowerPoint"""
-        for paragraph in text_frame.paragraphs:
-            for run in paragraph.runs:
+            # Recorremos todos los párrafos del slide en el XML
+            for paragraph in slide.part.element.xpath('.//a:p', namespaces=namespaces):
+                text_elements = paragraph.xpath('.//a:t', namespaces=namespaces)
+                if not text_elements:
+                    continue
+
+                full_text = ''.join(t.text or '' for t in text_elements)
+                new_text = full_text
+
                 for var_id, value in replacements.items():
                     placeholder = f"{{{{{var_id}}}}}"
-                    if placeholder in run.text:
-                        run.text = run.text.replace(placeholder, value)
+                    if placeholder in new_text:
+                        new_text = new_text.replace(placeholder, value)
+
+                # Si hubo cambios, volcamos el texto nuevo en el primer nodo y vaciamos el resto
+                if new_text != full_text:
+                    text_elements[0].text = new_text
+                    for extra in text_elements[1:]:
+                        extra.text = ''
+
+        return prs
 
 
 class Validator:
