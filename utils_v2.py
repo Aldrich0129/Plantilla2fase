@@ -5,7 +5,8 @@ VERSIÓN 2: Con soporte para contexto de variables y patrones combinados
 """
 
 import re
-from typing import Dict, List, Set, Tuple, Any
+from datetime import datetime
+from typing import Any, Dict, List, Set, Tuple
 from docx import Document
 from docx.shared import RGBColor
 from docx.oxml.ns import qn
@@ -439,7 +440,9 @@ class VariableNormalizer:
             'lista': f"Seleccione una opción para {var_name.replace('_', ' ')}:",
             'email': f"Ingrese el email para {var_name.replace('_', ' ')}:",
             'telefono': f"Ingrese el teléfono para {var_name.replace('_', ' ')}:",
-            'moneda': f"Ingrese el importe para {var_name.replace('_', ' ')}:"
+            'moneda': f"Ingrese el importe para {var_name.replace('_', ' ')}:",
+            'porcentaje': f"Indique el porcentaje para {var_name.replace('_', ' ')}:",
+            'booleano': f"Seleccione Sí/No para {var_name.replace('_', ' ')}:",
         }
         return questions_map.get(var_type, f"Ingrese el valor para {var_name.replace('_', ' ')}:")
 
@@ -448,38 +451,92 @@ class YAMLManager:
     """Gestiona archivos YAML de configuración"""
     
     @staticmethod
-    def create_variable_config(variables: dict) -> dict:
+    def create_variable_config(variables: dict | List[Dict[str, Any]]) -> dict:
         """
         Crea la estructura YAML con todas las variables detectadas y sus metadatos.
-        Compatible con tipos especiales: lista, moneda, telefono.
-        """
-        config = {'variables': []}
 
-        for var_id, info in variables.items():
-            # Saltar variables deshabilitadas
+        Ahora acepta listas de diccionarios (Fase 1) o el formato tradicional
+        basado en diccionarios para mantener compatibilidad retro.
+        Se añaden categorías, formatos sugeridos y banderas de calidad
+        pensadas para los entregables diarios de firmas Big4.
+        """
+
+        # Compatibilidad: dict -> lista
+        if isinstance(variables, dict):
+            variable_items = []
+            for var_id, info in variables.items():
+                variable_items.append({"nombre": var_id, **info})
+        else:
+            variable_items = variables
+
+        config = {
+            'variables': [],
+            'controles': {
+                'ultima_generacion': datetime.utcnow().isoformat() + 'Z',
+                'validador': 'plantillador_v2',
+            },
+        }
+
+        for info in variable_items:
             if info.get('disabled', False):
                 continue
-                
+
+            var_id = info.get('nombre')
+            var_type = info.get('tipo', 'texto')
+            pregunta = info.get('pregunta') or VariableNormalizer.generate_default_question(var_id, var_type)
             item = {
                 'nombre': var_id,
-                'tipo': info.get('tipo', 'texto'),
-                'pregunta': (
-                    info.get('pregunta') or
-                    VariableNormalizer.generate_default_question(var_id, info.get('tipo', 'texto'))
-                )
+                'tipo': var_type,
+                'pregunta': pregunta,
+                'categoria': info.get('categoria', 'general'),
+                'requerido': info.get('requerido', True),
+                'placeholder': info.get('placeholder'),
             }
 
-            # Si es lista → añadir opciones
-            if info.get('tipo') == 'lista' and info.get('opciones'):
+            if info.get('opciones'):
                 item['opciones'] = info['opciones']
-
-            # 🔹 Si tiene metadatos (moneda o teléfono), los guardamos en YAML
             if info.get('meta'):
                 item['meta'] = info['meta']
+            if info.get('formato'):
+                item['formato'] = info['formato']
+            item['ejemplo'] = info.get('ejemplo') or YAMLManager._default_example(var_type)
 
             config['variables'].append(item)
 
         return config
+
+    @staticmethod
+    def _default_example(var_type: str) -> str:
+        ejemplos = {
+            'fecha': '31/12/2024',
+            'hora': '14:30',
+            'moneda': '15000.00',
+            'porcentaje': '8.5%',
+            'email': 'nombre@empresa.com',
+            'telefono': '+34-600000000',
+        }
+        return ejemplos.get(var_type, 'valor')
+
+    @staticmethod
+    def create_value_manifest(values: Dict[str, str], schema: List[Dict[str, Any]], output_name: str) -> Dict[str, Any]:
+        """Construye un manifiesto de reemplazo para auditoría."""
+
+        indexed_schema = {item.get('nombre'): item for item in schema}
+        applied = []
+        for key, value in values.items():
+            meta = indexed_schema.get(key, {})
+            applied.append({
+                'nombre': key,
+                'tipo': meta.get('tipo', 'texto'),
+                'categoria': meta.get('categoria', 'general'),
+                'valor': value,
+            })
+
+        return {
+            'informe': output_name,
+            'generado_en': datetime.utcnow().isoformat() + 'Z',
+            'valores': applied,
+        }
     
     @staticmethod
     def save_yaml(data: Dict, filepath: str):

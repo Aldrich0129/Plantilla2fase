@@ -16,9 +16,18 @@ def _show_detected_variables(detected: List[DetectedVariable]):
         st.info("No se detectaron marcadores en el documento.")
         return
     for var in detected:
-        st.markdown(
-            f"- **{var.nombre}** → marcador original `{var.marcador_original}` · tipo sugerido: `{var.tipo}`"
-        )
+        detalle = [
+            f"**{var.nombre}**",
+            f"marcador `{var.marcador_original}`",
+            f"tipo: `{var.tipo}`",
+            f"categoría: `{var.categoria}`",
+        ]
+        if var.opciones:
+            detalle.append(f"opciones: {', '.join(var.opciones)}")
+        if var.formato:
+            detalle.append(f"formato: {var.formato}")
+
+        st.markdown("- " + " · ".join(detalle))
 
 
 def run_ui():

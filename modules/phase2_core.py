@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Tuple
+from zipfile import ZipFile
 
 from docx import Document
 from pptx import Presentation
@@ -29,6 +30,22 @@ class ReportFiller:
             raise ValueError("Formato no soportado. Usa .docx o .pptx")
         return filled
 
+    def generate_delivery(self, template_path: Path, values: Dict[str, str], schema: List[Dict]) -> Tuple[Path, Path, Path]:
+        """Crea el informe final más un paquete de entrega para auditoría."""
+
+        filled_path = self.fill(template_path, values)
+        manifest = YAMLManager.create_value_manifest(values, schema, filled_path.name)
+        manifest_path = self.workdir / f"{template_path.stem}_manifest.yaml"
+        YAMLManager.save_yaml(manifest, str(manifest_path))
+
+        package_path = self.workdir / f"{template_path.stem}_entrega.zip"
+        with ZipFile(package_path, "w") as zf:
+            zf.write(filled_path, filled_path.name)
+            zf.write(manifest_path, manifest_path.name)
+            zf.writestr("resumen.txt", self._build_summary(manifest))
+
+        return filled_path, manifest_path, package_path
+
     def _fill_docx(self, template_path: Path, values: Dict[str, str]) -> Path:
         doc = Document(template_path)
         doc = DocumentProcessor.replace_in_docx(doc, values)
@@ -42,6 +59,19 @@ class ReportFiller:
         output = self.workdir / f"{template_path.stem}_completado.pptx"
         prs.save(output)
         return output
+
+    @staticmethod
+    def _build_summary(manifest: Dict[str, str]) -> str:
+        lines = ["Resumen de entrega", "===================", ""]
+        lines.append(f"Archivo: {manifest.get('informe')}")
+        lines.append(f"Generado en: {manifest.get('generado_en')}")
+        lines.append("")
+        lines.append("Variables aplicadas:")
+        for var in manifest.get('valores', []):
+            lines.append(
+                f"- {var.get('nombre')} ({var.get('tipo')}, {var.get('categoria')}): {var.get('valor')}"
+            )
+        return "\n".join(lines)
 
 
 __all__ = ["ReportFiller"]

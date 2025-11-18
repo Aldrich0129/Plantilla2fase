@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from typing import List, Optional
 
 _SANITIZE_PATTERNS = [
     (r'[\[\(\{]\s*\{\{\s*([^\}]+?)\s*\}\}\s*[\]\)\}]', r"{{\1}}"),
@@ -44,11 +45,23 @@ def clean_pattern_markers(text: str) -> str:
     return text.strip()
 
 
-def infer_variable_type(text: str) -> str:
-    """Devuelve un tipo aproximado de variable basándose en palabras clave."""
+def infer_variable_type(text: str, options: Optional[List[str]] = None) -> str:
+    """Devuelve un tipo aproximado de variable basándose en palabras clave.
+
+    Se amplía la taxonomía para cubrir necesidades típicas de firmas de
+    consultoría internacionales: porcentajes, booleanos de control, y
+    campos financieros o de ubicación.
+    """
+
+    if options:
+        return "lista"
 
     text_lower = text.lower()
-    if any(tok in text_lower for tok in ["€", "eur", "euro", "euros", "usd", "$", "dólar", "dolar", "dólares", "dolares", "importe", "monto"]):
+    if any(tok in text_lower for tok in ["%", "porcentaje", "percent"]):
+        return "porcentaje"
+    if any(tok in text_lower for tok in ["si/no", "sí/no", "aplica", "aplicable", "yes/no", "true", "false"]):
+        return "booleano"
+    if any(tok in text_lower for tok in ["€", "eur", "euro", "euros", "usd", "$", "dólar", "dolar", "dólares", "dolares", "importe", "monto", "facturación", "ingreso", "tarifa"]):
         return "moneda"
     if any(word in text_lower for word in ["fecha", "date", "día", "mes", "año"]):
         return "fecha"
@@ -56,11 +69,47 @@ def infer_variable_type(text: str) -> str:
         return "hora"
     if any(word in text_lower for word in ["email", "correo", "mail"]):
         return "email"
-    if any(word in text_lower for word in ["teléfono", "telefono", "phone", "móvil", "movil"]):
+    if any(word in text_lower for word in ["teléfono", "telefono", "phone", "móvil", "movil", "cel", "celular"]):
         return "telefono"
-    if any(word in text_lower for word in ["número", "numero", "cantidad", "monto", "precio"]):
+    if any(word in text_lower for word in ["número", "numero", "cantidad", "monto", "precio", "tasa"]):
         return "numero"
+    if any(word in text_lower for word in ["país", "pais", "ciudad", "jurisdicción", "region", "oficina"]):
+        return "ubicacion"
     return "texto"
+
+
+def infer_variable_category(text: str, var_type: str) -> str:
+    """Clasifica la variable en categorías consultoras estándar."""
+
+    text_lower = text.lower()
+    if var_type in {"email", "telefono"}:
+        return "contacto"
+    if var_type in {"fecha", "hora"}:
+        return "temporal"
+    if var_type in {"moneda", "numero", "porcentaje"}:
+        return "financiera"
+    if var_type == "ubicacion" or any(word in text_lower for word in ["pais", "ciudad", "jurisdiccion", "región", "region", "oficina"]):
+        return "geografia"
+    if any(word in text_lower for word in ["cliente", "empresa", "entidad", "compañía", "compania", "sociedad", "ruc", "nit", "rut"]):
+        return "identificacion"
+    if any(word in text_lower for word in ["riesgo", "control", "cumplimiento", "auditoria", "política", "politica"]):
+        return "gobierno_riesgo"
+    if any(word in text_lower for word in ["proyecto", "alcance", "entregable", "fase", "hito", "milestone", "engagement"]):
+        return "proyecto"
+    return "general"
+
+
+def suggest_format(var_type: str) -> Optional[str]:
+    """Sugiere un formato esperado para el tipo de variable."""
+
+    formats = {
+        "fecha": "DD/MM/AAAA",
+        "hora": "HH:MM",
+        "moneda": "9999999.99",
+        "porcentaje": "0.00%",
+        "telefono": "+[código]-#########",
+    }
+    return formats.get(var_type)
 
 
 def hex_to_color_name(hex_color: str) -> str:
